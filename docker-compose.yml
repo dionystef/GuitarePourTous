@@ -1,0 +1,81 @@
+# -----------------------------------------------------------------------------
+# Guitar Lab — orchestration Docker Compose
+#
+# Usage de base (CPU, fonctionne partout) :
+#   docker compose up --build
+#
+# Usage avec GPU NVIDIA (si nvidia-container-toolkit installé) :
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# La détection GPU est automatique au runtime : le backend bascule sur CPU
+# dès qu'aucun GPU CUDA n'est disponible (DEVICE=auto).
+# -----------------------------------------------------------------------------
+
+name: guitarlab
+
+services:
+  guitarlab:
+    build:
+      context: .
+      # DNS de l'hôte pour le build (contourne les soucis de résolution
+      # type « Temporary failure resolving deb.debian.org » en conteneur).
+      network: host
+      args:
+        PYTHON_VERSION: "3.10"
+        # Build CPU par défaut ; le fichier docker-compose.gpu.yml écrase
+        # cette valeur avec l'index CUDA. Surcharge possible :
+        #   TORCH_INDEX_URL=... docker compose up --build
+        TORCH_INDEX_URL: "${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+    image: guitarlab:latest
+    container_name: guitarlab
+    restart: unless-stopped
+    # Réseau de l'hôte : le VPN du travail neutralise le pont Docker (déjà
+    # utilisé pour le build). L'app écoute alors directement sur 127.0.0.1:8005
+    # → http://localhost:8005 (plus de « ports: » à publier).
+    network_mode: host
+    environment:
+      DATA_DIR: /app/data
+      # auto → CUDA si disponible, sinon CPU. Vous pouvez forcer : cpu | cuda
+      DEVICE: "${DEVICE:-auto}"
+      LOG_LEVEL: info
+    volumes:
+      # Bibliothèque locale des morceaux (persistée sur l'hôte).
+      - ./data:/app/data
+      # Frontend monté en lecture seule — permet de développer sans rebuild.
+      - ./static:/app/static:ro
+      # Code Python du serveur monté en lecture seule — modification à chaud
+      # sans rebuild (services/ + main.py).
+      - ./services:/app/services:ro
+      - ./main.py:/app/main.py:ro
+      # Cache des modèles (demucs / basic-pitch / madmom) pour ne pas les
+      # retélécharger à chaque rebuild.
+      - model_cache:/models
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8005"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8005/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+    # ─────────────────────────────────────────────────────────────────
+    # ACCÉLÉRATION GPU (optionnel) :
+    #
+    # Sur les hôtes avec une carte NVIDIA et nvidia-container-toolkit,
+    # activez le bloc suivant OU (recommandé) utilisez
+    #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml ...
+    #
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    #
+    # Sans GPU, laissez ce bloc commenté : la détection automatique
+    # (DEVICE=auto) fera tourner le pipeline sur CPU.
+    # ─────────────────────────────────────────────────────────────────
+
+volumes:
+  model_cache:

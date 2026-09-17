@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b0e14" />
+  <meta name="description" content="Guitar Lab — décortique un morceau : stems isolés, grille d'accords synchronisée, solo en MIDI/tablature." />
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <title>Guitar Lab — Labo de répétition guitare</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" id="btn-brand" style="cursor: pointer;">
+      <span class="logo" aria-hidden="true"></span>
+      <span class="brand-name">Guitar&nbsp;Lab</span>
+      <span class="brand-sub">studio de répétition</span>
+    </div>
+    <nav>
+      <button class="nav-link" id="btn-nav-home">Bibliothèque</button>
+      <span class="device-chip" id="device-chip" title="Device de calcul">&hellip;</span>
+    </nav>
+  </header>
+
+  <main>
+    <!-- ============ Écran d'accueil / Bibliothèque ============ -->
+    <section id="view-home" class="view">
+      <div class="hero panel">
+        <h1>Décortique un morceau, <em>apprends-le</em>.</h1>
+        <p class="hero-sub">
+          Colle une URL YouTube ou upload un audio&nbsp;: Guitar Lab sépare les
+          pistes, détecte les accords mesur&eacute; par mesur&eacute; et extrait le
+          solo en MIDI&nbsp;/&nbsp;tablature.
+        </p>
+
+        <form id="add-form" autocomplete="off">
+          <div class="url-row">
+            <span class="input-icon" aria-hidden="true">&#128279;</span>
+            <input id="url-input" type="url" placeholder="https://www.youtube.com/watch?v=… ou https://youtu.be/…" />
+          </div>
+          <div class="action-row">
+            <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg" hidden />
+            <button type="button" id="btn-file" class="btn ghost">⬆&nbsp; Upload audio</button>
+            <span id="file-name" class="file-name"></span>
+            <button type="submit" id="btn-submit" class="btn primary">
+              <span class="btn-ico">&#9655;</span> D&eacute;cortiquer
+            </button>
+          </div>
+          <p class="hint" id="form-hint"></p>
+        </form>
+      </div>
+
+      <div id="job-panel" class="panel job-panel hidden">
+        <div class="job-head">
+          <span class="status-dot" id="job-dot"></span>
+          <span class="job-title" id="job-title">Traitement en cours&hellip;</span>
+          <span class="job-id mono" id="job-id"></span>
+          <span class="progress-pct" id="job-pct">0%</span>
+          <button type="button" class="job-close" id="job-close" title="Masquer le terminal" aria-label="Fermer le terminal">&times;</button>
+        </div>
+        <div class="progress"><div class="progress-bar" id="job-bar" style="width:0%"></div></div>
+        <div class="terminal" id="job-logs"><div class="term-line dim">Attente des logs…</div></div>
+      </div>
+
+      <div class="section-title"><span>Bibliothèque locale</span><span class="count" id="lib-count"></span></div>
+      <div id="library" class="library"></div>
+      <div id="empty-lib" class="empty hidden">
+        <p>Aucun morceau pour le moment.</p>
+        <p class="dim">Lancez un premier d&eacute;corticage ci-dessus pour remplir le labo.</p>
+      </div>
+    </section>
+
+    <!-- ============ Lecteur & console de répétition ============ -->
+    <section id="view-player" class="view hidden"></section>
+  </main>
+
+  <footer class="foot">
+    <span>Guitar Lab &mdash; yt-dlp &middot; Demucs &middot; madmom &middot; basic-pitch</span>
+    <span class="key-hints">Espace : play / pause &middot; &larr;&rarr; &plusmn;5&nbsp;s &middot; S : stop</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

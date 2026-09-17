@@ -1,0 +1,22 @@
+# Normalise les fins de ligne des fichiers texte.
+* text=auto
+
+# Fichiers texte du projet (LF).
+*.py text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.txt text eol=lf
+*.webmanifest text eol=lf
+*.svg text eol=lf
+
+# Média & artefacts audio → binaires (pas de normalisation de ligne).
+*.wav binary
+*.mp3 binary
+*.m4a binary
+*.flac binary
+*.ogg binary
+*.mid binary

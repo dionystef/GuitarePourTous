@@ -1,0 +1,29 @@
+# -----------------------------------------------------------------------------
+# Surcouche GPU pour Guitar Lab (usage : voir docker-compose.yml).
+#
+# Prérequis côté hôte :
+#   - pilotes NVIDIA + GPU compatible CUDA
+#   - nvidia-container-toolkit + configurer le runtime Docker :
+#       sudo apt-get install -y nvidia-container-toolkit
+#       sudo nvidia-ctk runtime configure --runtime=docker
+#       sudo systemctl restart docker
+#
+# Lancement :
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+# -----------------------------------------------------------------------------
+
+services:
+  guitarlab:
+    build:
+      args:
+        # Image PyTorch compilée pour CUDA 12.1 (host nvidia >= 525).
+        TORCH_INDEX_URL: "https://download.pytorch.org/whl/cu121"
+    environment:
+      DEVICE: cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

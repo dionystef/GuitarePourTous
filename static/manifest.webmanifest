@@ -1,0 +1,16 @@
+{
+  "name": "Guitar Lab — Labo de répétition guitare",
+  "short_name": "Guitar Lab",
+  "description": "Séparation de stems, grille d'accords synchronisée et solo en MIDI/tablature à partir d'une URL YouTube ou d'un fichier audio.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "landscape",
+  "background_color": "#0b0e14",
+  "theme_color": "#0b0e14",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/static/icon.svg", "sizes": "512x512", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

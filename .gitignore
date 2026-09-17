@@ -1,0 +1,46 @@
+# ── Bibliothèque locale ───────────────────────────────────────────────────────
+# Morceaux analysés + artefacts (stems MP3/WAV, MIDI, accords) — montés dans le
+# conteneur via ./data. On conserve uniquement le marqueur du dossier.
+data/*
+!data/.gitkeep
+
+# ── Python ─────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pixi/
+
+# ── Tests / qualité ───────────────────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ── Environnement / secrets ───────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+.DS_Store
+
+# ── Éditeurs ──────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+
+# ── Logs & fichiers temporaires ───────────────────────────────────────────────
+*.log
+*.part
+
+# Fichiers audio locaux
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.ogg

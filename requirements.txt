@@ -1,0 +1,39 @@
+# Guitar Lab — dépendances Python
+# torch + torchaudio sont installés explicitement dans le Dockerfile
+# (index CPU ou CUDA selon le build argument TORCH_INDEX_URL).
+# Python 3.10 recommandé.
+
+# setuptools épinglé <70 : la version 84.0.0 (par défaut) a supprimé
+# `pkg_resources`, que librosa& madmom utilisent encore.
+setuptools<70
+
+# --- Web API ---
+fastapi==0.110.0
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+# --- Numérique / audio ---
+numpy==1.24.4
+scipy==1.10.1
+soundfile==0.12.1
+librosa==0.10.1
+
+# --- Musique / harmonie (beats + accords) ---
+# Repli automatique sur un analyseur librosa si madmom n'est pas installable.
+madmom==0.16.1
+
+# --- Séparation de sources ---
+demucs==4.0.1
+
+# --- Transcription du solo (MIDI + tablature) ---
+# basic-pitch 0.4.0 : dernière version disponible sur PyPI pour Python 3.10
+# (la 0.5.x n'y figure pas). note_events au format tuple de tableaux
+# (start/end/fréquences) — géré par services/solo_transcriber.py.
+basic-pitch==0.4.0
+mido==1.3.2              # backend de pretty_midi : exige mido < 2.x
+
+# --- Téléchargement YouTube ---
+# ⚠ yt-dlp doit rester récent : YouTube change souvent ses endpoints.
+#   `pip install -U yt-dlp` (ou rebuild de l'image Docker) si un
+#   téléchargement échoue.
+yt-dlp>=2025.1.0

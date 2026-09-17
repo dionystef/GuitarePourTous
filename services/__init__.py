@@ -1,0 +1,1 @@
+"""Guitar Lab — services métier (ingestion, séparation, analyse, solo)."""
