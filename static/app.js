@@ -1225,6 +1225,29 @@ async function init() {
   $('#btn-nav-home')?.addEventListener('click', showHome);
   $('#btn-brand')?.addEventListener('click', showHome);
 
+  /* Gestion du thème Studio / Xbox */
+  const themeBtn = $('#btn-theme-toggle');
+  const themeLabel = $('#theme-label');
+  function updateThemeUI() {
+    const isXbox = document.documentElement.getAttribute('data-theme') === 'xbox';
+    if (themeLabel) themeLabel.textContent = isXbox ? 'Studio' : 'Xbox';
+    if (themeBtn) themeBtn.title = isXbox ? 'Passer au thème Studio' : 'Passer au thème Xbox';
+  }
+  if (themeBtn) {
+    updateThemeUI();
+    themeBtn.addEventListener('click', () => {
+      const isXbox = document.documentElement.getAttribute('data-theme') === 'xbox';
+      if (isXbox) {
+        document.documentElement.removeAttribute('data-theme');
+        localStorage.removeItem('guitarlab_theme');
+      } else {
+        document.documentElement.setAttribute('data-theme', 'xbox');
+        localStorage.setItem('guitarlab_theme', 'xbox');
+      }
+      updateThemeUI();
+    });
+  }
+
   // formulaire
   const form = $('#add-form');
   const urlInput = $('#url-input');

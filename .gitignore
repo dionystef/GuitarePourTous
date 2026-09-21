@@ -44,3 +44,6 @@ htmlcov/
 *.flac
 *.m4a
 *.ogg
+# Playwright CLI output (may contain credentials)
+.playwright-cli/
+.claude/

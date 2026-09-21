@@ -8,14 +8,26 @@
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
   <link rel="manifest" href="/static/manifest.webmanifest" />
   <title>Guitar Lab — Labo de répétition guitare</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('guitarlab_theme');
+      if (saved) document.documentElement.setAttribute('data-theme', saved);
+    })();
+  </script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <header class="topbar">
-    <div class="brand" id="btn-brand" style="cursor: pointer;">
-      <span class="logo" aria-hidden="true"></span>
-      <span class="brand-name">Guitar&nbsp;Lab</span>
-      <span class="brand-sub">studio de répétition</span>
+    <div class="topbar-left" style="display: flex; align-items: center; gap: 14px;">
+      <button id="btn-theme-toggle" class="theme-toggle-btn" type="button" title="Basculer le thème (Studio / Xbox)" aria-label="Changer de thème">
+        <span class="theme-icon">🎮</span>
+        <span id="theme-label" class="theme-label">Xbox</span>
+      </button>
+      <div class="brand" id="btn-brand" style="cursor: pointer;">
+        <span class="logo" aria-hidden="true"></span>
+        <span class="brand-name">Guitar&nbsp;Lab</span>
+        <span class="brand-sub">studio de répétition</span>
+      </div>
     </div>
     <nav>
       <button class="nav-link" id="btn-nav-home">Bibliothèque</button>
