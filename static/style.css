@@ -255,10 +255,13 @@ input[type="range"].fader::-moz-range-thumb, .seekbar::-moz-range-thumb {
 
 .tr-group { display: flex; align-items: center; gap: 6px; }
 .tr-group .lbl { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .08em; }
-select.speed {
-  background: var(--panel-2); color: var(--text); border: 1px solid var(--border-2);
-  border-radius: 8px; padding: 8px 10px; font-family: var(--mono); font-size: 13px; cursor: pointer;
+.speed-group { display: inline-flex; gap: 4px; }
+.sp-btn {
+  background: var(--panel-2); color: var(--text-dim); border: 1px solid var(--border-2);
+  border-radius: 7px; padding: 7px 8px; font-family: var(--mono); font-size: 12px; cursor: pointer;
 }
+.sp-btn:hover { color: var(--text); border-color: var(--accent-2); }
+.sp-btn.active { background: var(--accent-2); color: #0b0e14; border-color: var(--accent-2); }
 
 /* --- Widget de Transposition --- */
 .transpose-group {

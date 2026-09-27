@@ -207,8 +207,8 @@ const stemColor = (n) => (CHANNELS[n] && CHANNELS[n].color) || 'var(--text-dim)'
 class AudioEngine {
   constructor(track) {
     this.track = track;
-    this.stems = [];
-    this.master = null;
+    this.stems = [];          // [{ name, buffer, gain, src }]
+    this.master = null;       // référence du 1er stem (compat)
     this.playing = false;
     this.speed = 1;
     this.muted = new Set();
@@ -219,57 +219,108 @@ class AudioEngine {
     this.stemVolumes = {};
     this.ready = false;
     this.duration = track.duration || 0;
-    this._drift = null;
+    this.ctx = null;
+    this.masterGain = null;
+    this._startOffset = 0;    // temps média au début du segment courant
+    this._startCtx = 0;       // ctx.currentTime au début du segment courant
+    this._stopping = false;
   }
 
-  get currentTime() { return this.ready && this.master ? this.master.el.currentTime : 0; }
-
-  load() {
-    this.stems = this.track.stems.map(name => {
-      const el = new Audio(`/data/${this.track.id}/stems/${name}.mp3`);
-      el.preload = 'auto';
-      el.volume = 1;
-      try { el.preservesPitch = true; el.mozPreservesPitch = true; el.webkitPreservesPitch = true; } catch (_) { /* ignore */ }
-      return { name, el };
-    });
-    return Promise.all(this.stems.map(s => new Promise(res => {
-      const ok = () => { s.loaded = true; res(); };
-      s.el.addEventListener('loadeddata', () => { ok(); }, { once: true });
-      s.el.addEventListener('canplay', () => { ok(); }, { once: true });
-      s.el.addEventListener('error', () => { s.loaded = false; res(); }, { once: true });
-      setTimeout(ok, 2000); // Sécurité anti-blocage
-      try { s.el.load(); } catch (_) { res(); }
-    }))).then(() => {
-      const ds = this.stems.map(s => s.el.duration || 0).filter(Boolean);
-      if (ds.length) this.duration = Math.max(...ds);
-      this.master = this.stems[0];
-      this.ready = true;
-      this.refreshMix();
-    });
+  get currentTime() {
+    if (!this.ready || !this.ctx) return this._startOffset || 0;
+    if (!this.playing) return this._startOffset;
+    return this._startOffset + (this.ctx.currentTime - this._startCtx) * this.speed;
   }
+
+  async load() {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) { this.ready = true; return; }
+    try { this.ctx = new AC(); } catch (e) { this.ctx = null; this.ready = true; return; }
+    this.masterGain = this.ctx.createGain();
+    this.masterGain.connect(this.ctx.destination);
+    this.masterGain.gain.value = this.masterVolume;
+
+    const results = await Promise.all(this.track.stems.map(name =>
+      this._decode(name).catch(err => { console.error('decode', name, err); return null; })
+    ));
+    this.stems = results.filter(Boolean);
+    const ds = this.stems.map(s => s.buffer.duration).filter(Boolean);
+    if (ds.length) this.duration = Math.max(...ds);
+    this.master = this.stems[0] || null;
+    this.ready = true;
+    console.log("AudioEngine prêt");
+    this.refreshMix();
+    this.applyVolumes();
+  }
+
+  async _decode(name) {
+    const res = await fetch(`/data/${this.track.id}/stems/${name}.mp3`);
+    const arr = await res.arrayBuffer();
+    const buffer = await this.ctx.decodeAudioData(arr);
+    const gain = this.ctx.createGain();
+    gain.connect(this.masterGain);
+    return { name, buffer, gain, src: null };
+  }
+
+  _resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); }
 
   play() {
-    if (!this.ready || this.playing) return;
+    if (!this.ready || this.playing || !this.stems.length) return;
+    this._resume();
     this.playing = true;
-    for (const s of this.stems) {
-      s.el.playbackRate = this.speed;
-      try { s.el.play(); } catch (_) { /* autoplay */ }
-    }
-    this._startDrift();
+    this._spawn();
   }
 
-  pause() { if (!this.ready) return; this.playing = false; for (const s of this.stems) s.el.pause(); this._stopDrift(); }
+  _spawn() {
+    const delay = 0.015;
+    this._startCtx = this.ctx.currentTime + delay;
+    this._stopping = true;
+    for (const s of this.stems) {
+      if (s.src) { try { s.src.stop(); } catch (_) {} }
+      const src = this.ctx.createBufferSource();
+      src.buffer = s.buffer;
+      src.playbackRate.value = this.speed;
+      // Préservation de la hauteur si l'implémentation le propose (sinon le ralenti
+      // redeviendra "chipmunk" — compromis dû au backend WebAudio).
+      try { src.preservesPitch = true; src.detune.value = 0; } catch (_) { /* non supporté */ }
+      src.connect(s.gain);
+      const offset = Math.max(0, Math.min(this._startOffset, s.buffer.duration - 0.001));
+      src.start(this._startCtx, offset);
+      src.onended = () => {
+        // Ignore les sources devenues obsolètes (stop() asynchrone lors d'un seek/pause).
+        if (this._stopping || s.src !== src) return;
+        this.playing = false;
+        this._startOffset = this.duration;
+      };
+      s.src = src;
+    }
+    this._stopping = false;
+  }
 
-  stop() { this.pause(); if (this.ready) for (const s of this.stems) s.el.currentTime = 0; }
+  pause() {
+    if (!this.ready || !this.playing) return;
+    this._startOffset = this.currentTime;
+    this._stopSources();
+    this.playing = false;
+  }
+
+  stop() {
+    this._startOffset = 0;
+    this._stopSources();
+    this.playing = false;
+  }
 
   seek(t) {
     if (!this.ready) return;
     const T = clamp(t, 0, this.duration || t);
-    for (const s of this.stems) s.el.currentTime = T;
-    if (this.playing) for (const s of this.stems) { s.el.playbackRate = this.speed; try { s.el.play(); } catch (_) { /* */ } }
+    this._startOffset = T;
+    if (this.playing) this._spawn();
   }
 
-  setSpeed(v) { this.speed = v; if (this.ready) for (const s of this.stems) s.el.playbackRate = v; }
+  setSpeed(v) {
+    this.speed = v;
+    for (const s of this.stems) if (s.src) s.src.playbackRate.value = v;
+  }
 
   setVolume(name, v) {
     this.stemVolumes[name] = clamp(v, 0, 1.5);
@@ -284,16 +335,16 @@ class AudioEngine {
     this.applyVolumes();
     return this.masterMuted;
   }
+
+  _effectiveGain(name) {
+    if (this.masterMuted) return 0;
+    if (this.muted.has(name)) return 0;
+    if (this.solo && this.solo !== name) return 0;
+    const base = (this.stemVolumes[name] != null) ? this.stemVolumes[name] : 1.0;
+    return clamp(base * this.masterVolume, 0, 1.0);
+  }
   applyVolumes() {
-    if (!this.ready) return;
-    for (const s of this.stems) {
-      if (this.masterMuted) {
-        s.el.volume = 0;
-      } else {
-        const base = (this.stemVolumes[s.name] != null) ? this.stemVolumes[s.name] : 1.0;
-        s.el.volume = clamp(base * this.masterVolume, 0, 1.0);
-      }
-    }
+    this._applyGains();
   }
 
   toggleMute(name) {
@@ -302,10 +353,13 @@ class AudioEngine {
   }
   toggleSolo(name) { this.solo = this.solo === name ? null : name; this.refreshMix(); }
   refreshMix() {
-    if (!this.ready) return;
+    this._applyGains();
+  }
+
+  _applyGains() {
+    if (!this.ready || !this.ctx) return;
     for (const s of this.stems) {
-      const audible = !this.muted.has(s.name) && (!this.solo || this.solo === s.name);
-      s.el.muted = !audible;
+      s.gain.gain.setTargetAtTime(this._effectiveGain(s.name), this.ctx.currentTime, 0.012);
     }
   }
 
@@ -315,26 +369,18 @@ class AudioEngine {
   setLoopBarB(idx) { this.loop.barB = idx; }
   _enableLoop() { if (this.loop.a >= 0 && this.loop.b > this.loop.a && !this.loop.on) this.loop.on = true; }
 
-  _startDrift() {
-    if (this._drift) clearInterval(this._drift);
-    this._drift = setInterval(() => {
-      if (!this.playing || !this.master) return;
-      const base = this.master.el.currentTime;
-      for (const s of this.stems) {
-        if (s === this.master) continue;
-        let rate = this.speed;
-        const d = s.el.currentTime - base;
-        if (Math.abs(d) > 0.045) rate = this.speed * clamp(1 - d * 0.15, 0.955, 1.045);
-        if (Math.abs(s.el.playbackRate - rate) > 0.0015) s.el.playbackRate = rate;
-      }
-    }, 200);
+  _stopSources() {
+    this._stopping = true;
+    for (const s of this.stems) { if (s.src) { try { s.src.stop(); } catch (_) {} } s.src = null; }
+    this._stopping = false;
   }
-  _stopDrift() { if (this._drift) { clearInterval(this._drift); this._drift = null; } }
 
   destroy() {
-    this.pause();
-    for (const s of this.stems) { try { s.el.removeAttribute('src'); s.el.load(); } catch (_) { /* */ } }
+    this._stopSources();
+    this.playing = false;
+    if (this.ctx) { try { this.ctx.close(); } catch (_) { /* */ } }
     this.stems = [];
+    this.ctx = null;
     this.ready = false;
   }
 }
@@ -586,12 +632,12 @@ function buildPlayer(track) {
       <button class="t-btn" id="btn-stop" title="Stop">■</button>
       <span class="t-time"><b id="t-cur">0:00</b> / <span id="t-tot">${fmtTime(track.duration)}</span></span>
       <input type="range" class="seekbar" id="seek" min="0" max="100" step="0.01" value="0" />
-      <select id="speed" class="speed" title="Vitesse sans changement de hauteur">
-        <option value="0.5">0.5×</option>
-        <option value="0.75">0.75×</option>
-        <option value="0.9">0.9×</option>
-        <option value="1" selected>1.0×</option>
-      </select>
+      <div class="speed-group" id="speed-group" title="Vitesse sans changement de hauteur">
+        <button class="sp-btn" data-speed="0.5">0.5×</button>
+        <button class="sp-btn" data-speed="0.75">0.75×</button>
+        <button class="sp-btn" data-speed="0.9">0.9×</button>
+        <button class="sp-btn active" data-speed="1">1.0×</button>
+      </div>
       <div class="tr-group">
         <button class="t-btn" id="btn-loop" title="Boucle A/B">⤾</button>
         <button class="t-btn" id="btn-setA" title="Définir A = position">A</button>
@@ -972,7 +1018,12 @@ function buildPlayer(track) {
   $('#btn-stop').onclick = () => { engine.stop(); $('#btn-play').textContent = '▶'; $('#t-cur').textContent = '0:00'; $('#seek').value = 0; };
   $('#seek').addEventListener('input', (e) => { dragSeek = true; $('#t-cur').textContent = fmtTime(e.target.value / 100 * (engine.duration || 0)); });
   $('#seek').addEventListener('change', (e) => { engine.seek(e.target.value / 100 * (engine.duration || 0)); dragSeek = false; });
-  $('#speed').onchange = (e) => engine.setSpeed(parseFloat(e.target.value));
+  $$('#speed-group .sp-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      engine.setSpeed(parseFloat(btn.dataset.speed));
+      $$('#speed-group .sp-btn').forEach(b => b.classList.toggle('active', b === btn));
+    });
+  });
   $('#btn-setA').onclick = () => { engine.setLoopA(engine.currentTime); updateLoopUI(); };
   $('#btn-setB').onclick = () => { engine.setLoopB(engine.currentTime); updateLoopUI(); };
   $('#btn-loop').onclick = () => {

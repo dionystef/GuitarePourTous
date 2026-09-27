@@ -1,0 +1,6 @@
+target/
+gen/schemas/
+
+# Ressources lourdes générées (moteur PyInstaller + binaires ffmpeg) — jamais commitées.
+resources/engine/
+resources/bin/

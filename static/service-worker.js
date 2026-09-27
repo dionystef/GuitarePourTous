@@ -1,7 +1,7 @@
 /* Guitar Lab — service worker (PWA ready).
    Cache des coquilles (quark) en premier ; les données /data sont récupérées
    depuis le réseau (stems, grilles, tablatures — toujours à jour). */
-const CACHE = 'guitarlab-v1';
+const CACHE = 'guitarlab-v2';
 const SHELL = ['./', '/static/index.html', '/static/style.css', '/static/app.js',
   '/static/icon.svg', '/static/manifest.webmanifest'];
 
