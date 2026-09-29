@@ -42,6 +42,7 @@ from services.chord_analyzer import analyze as analyze_harmony
 from services.downloader import (fetch_youtube_title, ingest_upload,
                                  ingest_youtube)
 from services.library import delete_track as delete_library_track
+from services.lyrics_provider import resolve_lyrics
 from services.separator import separate_stems
 from services.solo_transcriber import transcribe_solo
 
@@ -205,6 +206,23 @@ class JobManager:
                 f"✔ Grille d'accords : {analysis['bpm']:.0f} BPM, "
                 f"{len(analysis['bars'])} mesures", 82)
 
+            # 3 bis) PAROLES
+            vocals_path = track_dir / "stems" / "vocals.mp3"
+            self.log(track_id, "Recherche des paroles synchronisées (LRCLIB)…", 83)
+            lyrics, src = resolve_lyrics(
+                meta["title"],
+                meta.get("artist", ""),
+                meta.get("duration", 0),
+                vocals_path,
+                track_dir / "lyrics.json",
+            )
+            if src == "lrclib":
+                self.log(track_id, f"✔ Paroles officielles synchronisées ({len(lyrics)} phrases)", 92)
+            elif src == "whisper":
+                self.log(track_id, f"✔ Paroles transcrites par IA ({len(lyrics)} phrases)", 92)
+            else:
+                self.log(track_id, "ℹ Aucune parole trouvée pour ce morceau", 92)
+
             # 4) SOLO (MIS EN PAUSE TEMPORAIREMENT - ÉCONOMIE DE RESSOURCES)
             # self.log(track_id, "Transcription du solo (basic-pitch)…", 86)
             # solo_wav = guitar_wav or wav
@@ -354,6 +372,17 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Guitar Lab", version="1.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def disable_static_cache_middleware(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
@@ -441,6 +470,12 @@ def track_detail(track_id: str):
             detail["chords"] = json.loads(chords_path.read_text("utf-8"))
         except Exception:
             detail["chords"] = None
+    lyrics_path = DATA_DIR / track_id / "lyrics.json"
+    if lyrics_path.exists():
+        try:
+            detail["lyrics"] = json.loads(lyrics_path.read_text("utf-8"))
+        except Exception:
+            detail["lyrics"] = None
     return detail
 
 

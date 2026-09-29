@@ -469,6 +469,8 @@ let lastBarEl = null;
 let dragSeek = false;
 let transposeDelta = 0;
 let preferFlats = false;
+let lastLyricIndex = -2;
+let lastIsInstrumental = false;
 function getActiveChord(chordName) {
   return transposeChord(chordName, transposeDelta, preferFlats);
 }
@@ -542,6 +544,7 @@ function tick() {
 
     // grille : mesure + temps actifs
     const hit = findActiveBar(t);
+    updateLyricsUI(t);
     $$('.bar.active').forEach(b => b.classList.remove('active'));
     $$('.beat.hot').forEach(b => b.classList.remove('hot'));
     if (hit) {
@@ -592,6 +595,67 @@ function getSectionStyle(tagName) {
   if (norm.includes('solo')) return { cls: 'tag-solo', lineCls: 'line-start-solo', icon: '🎸' };
   if (norm.includes('outro')) return { cls: 'tag-outro', lineCls: 'line-start-outro', icon: '🌸' };
   return { cls: 'tag-default', lineCls: 'line-start-default', icon: '🔷' };
+}
+
+function cleanLyric(text) {
+  if (!text) return '';
+  return text
+    .replace(/^["'—\-\s]+|["'—\-\s]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function updateLyricsUI(t) {
+  const pane = $('#vis-pane-lyrics');
+  if (!pane || pane.classList.contains('hidden')) return;
+  const segments = App.lyricsSegments || [];
+  if (!segments.length) return;
+  // Recherche du segment en cours ou précédent
+  let idx = segments.findIndex(s => t >= s.start && t < s.end);
+  if (idx === -1) {
+    idx = segments.reduce((acc, s, i) => (t >= s.start ? i : acc), -1);
+  }
+  let isInstrumental = false;
+  let curText = '';
+  let prevText = '';
+  let nextText = '';
+  if (idx === -1) {
+    // Avant la première phrase chantée
+    isInstrumental = true;
+    curText = '♪ Intro instrumentale ♪';
+    prevText = '';
+    nextText = segments[0] ? segments[0].text : '';
+  } else {
+    const curSeg = segments[idx];
+    const nextSeg = idx + 1 < segments.length ? segments[idx + 1] : null;
+    // Pause instrumentale entre 2 phrases (silence > 3s)
+    if (nextSeg && t > curSeg.end + 2 && (nextSeg.start - t > 2)) {
+      isInstrumental = true;
+      curText = '♪ Instrumental ♪';
+      prevText = curSeg.text;
+      nextText = nextSeg.text;
+    } else {
+      curText = curSeg.text;
+      prevText = idx > 0 ? segments[idx - 1].text : '';
+      nextText = nextSeg ? nextSeg.text : '';
+    }
+  }
+  prevText = cleanLyric(prevText);
+  curText = isInstrumental ? curText : cleanLyric(curText);
+  nextText = cleanLyric(nextText);
+  if (idx !== lastLyricIndex || isInstrumental !== lastIsInstrumental) {
+    lastLyricIndex = idx;
+    lastIsInstrumental = isInstrumental;
+    const elPrev = $('#lyric-prev');
+    const elCur = $('#lyric-cur');
+    const elNext = $('#lyric-next');
+    if (elPrev) elPrev.textContent = prevText.trim();
+    if (elCur) {
+      elCur.textContent = curText.trim() || '…';
+      elCur.classList.toggle('instrumental', isInstrumental);
+    }
+    if (elNext) elNext.textContent = nextText.trim();
+  }
 }
 
 function buildPlayer(track) {
@@ -670,15 +734,35 @@ function buildPlayer(track) {
           <button class="ms mute" id="ms-mute-master" title="Couper tout le son">M</button>
         </div>
       </aside>
-      <aside class="chord-now">
-        <div class="chord-stage" id="chord-stage">
-          <div class="chord-card current" id="card-current">
-            <span class="card-badge badge-now">Accord actuel</span>
-            <div id="diag-current"><div class="noc">Chargement…</div></div>
+      <aside class="chord-now" id="vis-panel">
+        <div class="vis-tabs">
+          <button type="button" class="vis-tab-btn" id="vis-tab-chords" data-tab="chords">🎸 Accords</button>
+          <button type="button" class="vis-tab-btn" id="vis-tab-lyrics" data-tab="lyrics">🎤 Paroles</button>
+        </div>
+        <div class="vis-content">
+          <!-- Vue Accords -->
+          <div class="vis-pane" id="vis-pane-chords">
+            <div class="chord-stage" id="chord-stage">
+              <div class="chord-card current" id="card-current">
+                <span class="card-badge badge-now">Accord actuel</span>
+                <div id="diag-current"><div class="noc">Chargement…</div></div>
+              </div>
+              <div class="chord-card next" id="card-next">
+                <span class="card-badge badge-next">Suivant ➔</span>
+                <div id="diag-next"><div class="noc">—</div></div>
+              </div>
+            </div>
           </div>
-          <div class="chord-card next" id="card-next">
-            <span class="card-badge badge-next">Suivant ➔</span>
-            <div id="diag-next"><div class="noc">—</div></div>
+          <!-- Vue Paroles (Karaoké 3 lignes) -->
+          <div class="vis-pane hidden" id="vis-pane-lyrics">
+            <div class="karaoke-stage" id="karaoke-stage">
+              <div class="karaoke-stream" id="karaoke-stream">
+                <div class="k-line k-prev" id="lyric-prev"></div>
+                <div class="k-line k-cur" id="lyric-cur">En attente des paroles…</div>
+                <div class="k-line k-next" id="lyric-next"></div>
+              </div>
+              <div class="noc hidden" id="karaoke-empty">Aucune parole disponible pour ce morceau</div>
+            </div>
           </div>
         </div>
       </aside>
@@ -702,6 +786,37 @@ function buildPlayer(track) {
 
   const engine = new AudioEngine(track);
   App.engine = engine;
+
+  // 1. Initialiser les segments AVANT toute manipulation d'onglets
+  App.lyricsSegments = Array.isArray(track.lyrics)
+    ? track.lyrics
+    : (track.lyrics?.segments || track.whisper?.segments || []);
+  const hasLyrics = App.lyricsSegments.length > 0;
+  $('#karaoke-stream')?.classList.toggle('hidden', !hasLyrics);
+  $('#karaoke-empty')?.classList.toggle('hidden', hasLyrics);
+  // 2. Gestion et bascule des onglets
+  const savedTab = localStorage.getItem('guitarlab_vis_tab') || 'chords';
+  function switchVisTab(tabName) {
+    localStorage.setItem('guitarlab_vis_tab', tabName);
+    const isChords = tabName === 'chords';
+    $('#vis-tab-chords')?.classList.toggle('active', isChords);
+    $('#vis-tab-lyrics')?.classList.toggle('active', !isChords);
+    $('#vis-pane-chords')?.classList.toggle('hidden', !isChords);
+    $('#vis-pane-lyrics')?.classList.toggle('hidden', isChords);
+    if (!isChords) {
+      lastLyricIndex = -2;
+      lastIsInstrumental = null;
+      updateLyricsUI(App.engine ? App.engine.currentTime : 0);
+    }
+  }
+  $('#vis-tab-chords')?.addEventListener('click', () => switchVisTab('chords'));
+  $('#vis-tab-lyrics')?.addEventListener('click', () => switchVisTab('lyrics'));
+  switchVisTab(savedTab);
+  // 3. Forcer un premier rendu immédiat des paroles si des segments existent
+  if (hasLyrics) {
+    updateLyricsUI(0);
+  }
+
   const rawBars = (track.chords && track.chords.bars) || [];
   const allBeats = rawBars.flatMap(b => b.times);
   const allSigs = rawBars.flatMap(b => b.sig);

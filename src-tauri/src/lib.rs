@@ -234,6 +234,19 @@ fn watch_backend(win: tauri::WebviewWindow) {
 }
 
 // --------------------------------------------------------------------------- //
+// Purge du cache WebKit (évite les conflits de cache WebKitGTK / PWA)
+// --------------------------------------------------------------------------- //
+fn purge_webkit_cache() {
+    if let Ok(home) = std::env::var("HOME") {
+        let base = PathBuf::from(home);
+        let webkit_cache = base.join(".local").join("share").join("com.guitarlab.desktop").join("WebKitCache");
+        let general_cache = base.join(".cache").join("com.guitarlab.desktop");
+        let _ = std::fs::remove_dir_all(webkit_cache);
+        let _ = std::fs::remove_dir_all(general_cache);
+    }
+}
+
+// --------------------------------------------------------------------------- //
 // Bootstrap
 // --------------------------------------------------------------------------- //
 pub fn run() {
@@ -242,6 +255,9 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(state)
         .setup(|app| {
+            // Purge le cache WebKitGTK au démarrage (avant le moteur).
+            purge_webkit_cache();
+
             // Lance le moteur autonome (sans bloquer, sans paniquer).
             spawn_engine(app);
 

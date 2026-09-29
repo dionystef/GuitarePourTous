@@ -387,9 +387,130 @@ input[type="range"].fader { width: 100%; }
 }
 
 /* accord actuel + manche --------------------------------------------------- */
+/* Panneau central de visualisation */
 .chord-now {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-  padding: 14px 16px; text-align: center; overflow: hidden; position: relative;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 16px 16px;
+  text-align: center;
+  overflow: hidden;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+.vis-tabs {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.vis-tab-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 14px;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.vis-tab-btn:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+.vis-tab-btn.active {
+  color: var(--accent-2);
+  background: rgba(var(--accent-rgb), 0.15);
+  border-color: rgba(var(--accent-rgb), 0.4);
+}
+/* Conteneur et panneaux : remplissage complet et centrage vertical parfait */
+.vis-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.vis-pane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+.vis-pane.hidden {
+  display: none !important;
+}
+/* Karaoké vertical 3 lignes */
+.karaoke-stage {
+  width: 100%;
+  min-height: 220px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  overflow: hidden;
+}
+.karaoke-stream {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 16px;
+}
+.k-line {
+  max-width: 82%;
+  text-align: center;
+  line-height: 1.4;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  will-change: transform, opacity;
+  transition: transform 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
+              opacity 0.25s ease,
+              color 0.25s ease;
+}
+.k-line.k-cur {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #ffffff;
+  text-shadow: 0 0 14px rgba(255, 255, 255, 0.25);
+  transform: scale(1.04);
+  padding: 6px 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  border-left: 3px solid var(--accent);
+  border-right: 3px solid var(--accent);
+  opacity: 1;
+}
+.k-line.k-cur.instrumental {
+  font-size: 1.05rem;
+  font-weight: 500;
+  font-style: italic;
+  color: #94a3b8;
+  border-color: rgba(148, 163, 184, 0.3);
+  background: transparent;
+  text-shadow: none;
+  transform: scale(1);
+}
+.k-line.k-prev, .k-line.k-next {
+  font-size: 0.95rem;
+  color: #94a3b8;
+}
+.k-line.k-prev {
+  opacity: 0.35;
+  margin-bottom: 12px;
+  transform: scale(0.96);
+}
+.k-line.k-next {
+  opacity: 0.55;
+  margin-top: 12px;
+  transform: scale(0.98);
 }
 .chord-stage {
   display: flex; gap: 14px; align-items: center; justify-content: center;
