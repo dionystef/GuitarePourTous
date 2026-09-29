@@ -11,11 +11,19 @@ Résolution du device : ``DEVICE=auto`` → CUDA si disponible, sinon CPU.
 """
 from __future__ import annotations
 
+import multiprocessing
+
+# PyInstaller + multiprocessing (torch/demucs) : évite les sous-processus
+# orphelins qui relancent le binaire et font planter uvicorn.
+multiprocessing.freeze_support()
+
+import anyio
 import asyncio
 import json
 import logging
 import os
 import re
+import sys
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -34,6 +42,7 @@ from services.chord_analyzer import analyze as analyze_harmony
 from services.downloader import (fetch_youtube_title, ingest_upload,
                                  ingest_youtube)
 from services.library import delete_track as delete_library_track
+from services.lyrics_provider import resolve_lyrics
 from services.separator import separate_stems
 from services.solo_transcriber import transcribe_solo
 
@@ -44,7 +53,16 @@ logging.basicConfig(
 logger = logging.getLogger("guitarlab")
 
 HERE = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get("DATA_DIR", HERE / "data"))
+if getattr(sys, "frozen", False):
+    # PyInstaller (mode --onedir) : toutes les données embarquées vivent
+    # dans le dossier `_MEIPASS` (services, static, …).
+    HERE = Path(getattr(sys, "_MEIPASS", HERE))
+
+# En binaire autonome, les données utilisateur vont dans un emplacement
+# inscriptible et persistant ; en dev on garde `HERE/data`.
+_default_data = (Path.home() / ".local" / "share" / "guitarlab" / "data"
+                 if getattr(sys, "frozen", False) else HERE / "data")
+DATA_DIR = Path(os.environ.get("DATA_DIR", _default_data))
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", HERE / "static"))
 MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "500")) * 1024 * 1024
 
@@ -188,6 +206,23 @@ class JobManager:
                 f"✔ Grille d'accords : {analysis['bpm']:.0f} BPM, "
                 f"{len(analysis['bars'])} mesures", 82)
 
+            # 3 bis) PAROLES
+            vocals_path = track_dir / "stems" / "vocals.mp3"
+            self.log(track_id, "Recherche des paroles synchronisées (LRCLIB)…", 83)
+            lyrics, src = resolve_lyrics(
+                meta["title"],
+                meta.get("artist", ""),
+                meta.get("duration", 0),
+                vocals_path,
+                track_dir / "lyrics.json",
+            )
+            if src == "lrclib":
+                self.log(track_id, f"✔ Paroles officielles synchronisées ({len(lyrics)} phrases)", 92)
+            elif src == "whisper":
+                self.log(track_id, f"✔ Paroles transcrites par IA ({len(lyrics)} phrases)", 92)
+            else:
+                self.log(track_id, "ℹ Aucune parole trouvée pour ce morceau", 92)
+
             # 4) SOLO (MIS EN PAUSE TEMPORAIREMENT - ÉCONOMIE DE RESSOURCES)
             # self.log(track_id, "Transcription du solo (basic-pitch)…", 86)
             # solo_wav = guitar_wav or wav
@@ -217,6 +252,7 @@ class JobManager:
             })
             (track_dir / "metadata.json").write_text(
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._cleanup_original(track_dir)
             self.log(track_id, "✔ Terminé. Bonne répétition ! 🎸", 100, status="ready")
         except Exception as exc:  # noqa: BLE001
             logger.exception("Pipeline en échec pour %s", track_id)
@@ -231,6 +267,29 @@ class JobManager:
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
                 pass
+
+    @staticmethod
+    def _cleanup_original(track_dir: Path) -> None:
+        """Supprime le fichier source original volumineux une fois le pipeline
+        terminé (séparation + accords), afin de préserver l'espace disque.
+
+        Conserve : ``source/audio.wav``, ``source/audio.mp3``, les stems et
+        ``metadata.json``. Supprime : ``source/raw.*`` (fichier téléchargé
+        YouTube ou fichier uploadé).
+        """
+        source_dir = track_dir / "source"
+        if not source_dir.is_dir():
+            return
+        try:
+            for p in source_dir.glob("raw.*"):
+                size_mb = p.stat().st_size / (1024 * 1024)
+                p.unlink(missing_ok=True)
+                logger.info(
+                    "Nettoyage : %s supprimé (%.1f Mo d'espace libéré)",
+                    p.name, size_mb,
+                )
+        except Exception:
+            logger.debug("Nettoyage du fichier source ignoré", exc_info=True)
 
 
 mgr = JobManager()
@@ -313,51 +372,18 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Guitar Lab", version="1.0.0", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def disable_static_cache_middleware(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-
-def range_file_response(path: Path, request: Request):
-    stat = path.stat()
-    file_size = stat.st_size
-    range_header = request.headers.get("range")
-    media_type = guess_type(str(path))[0] or "application/octet-stream"
-    headers = {
-        "Accept-Ranges": "bytes",
-        "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
-    }
-    if not range_header or not range_header.startswith("bytes="):
-        headers["Content-Length"] = str(file_size)
-        return FileResponse(path, headers=headers, media_type=media_type)
-    try:
-        range_val = range_header.strip().split("=")[-1]
-        start_str, end_str = range_val.split("-")
-        start = int(start_str) if start_str else 0
-        end = int(end_str) if end_str else file_size - 1
-        start = max(0, min(start, file_size - 1))
-        end = max(start, min(end, file_size - 1))
-        content_length = end - start + 1
-        headers.update({
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Content-Length": str(content_length),
-        })
-
-        def iterfile():
-            with open(path, "rb") as f:
-                f.seek(start)
-                remaining = content_length
-                chunk_size = 64 * 1024
-                while remaining > 0:
-                    read_size = min(chunk_size, remaining)
-                    chunk = f.read(read_size)
-                    if not chunk:
-                        break
-                    remaining -= len(chunk)
-                    yield chunk
-
-        return StreamingResponse(iterfile(), status_code=206, headers=headers, media_type=media_type)
-    except Exception:
-        headers["Content-Length"] = str(file_size)
-        return FileResponse(path, headers=headers, media_type=media_type)
 
 
 @app.get("/data/{file_path:path}")
@@ -365,7 +391,55 @@ async def serve_data_file(file_path: str, request: Request):
     path = (DATA_DIR / file_path).resolve()
     if not path.is_file() or not str(path).startswith(str(DATA_DIR.resolve())):
         raise HTTPException(404, "Fichier introuvable.")
-    return range_file_response(path, request)
+    stat = path.stat()
+    file_size = stat.st_size
+    media_type = guess_type(str(path))[0] or "application/octet-stream"
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Last-Modified": formatdate(stat.st_mtime, usegmt=True),
+    }
+
+    # Support des requêtes HTTP Range (seeking audio) : 206 + Content-Range,
+    # sinon 200 + fichier complet.
+    start, end = 0, file_size - 1
+    status_code = 200
+    range_header = request.headers.get("range")
+    if range_header and range_header.startswith("bytes="):
+        try:
+            range_val = range_header.strip().split("=")[-1]
+            start_str, end_str = range_val.split("-")
+            start = int(start_str) if start_str else 0
+            end = int(end_str) if end_str else file_size - 1
+            start = max(0, min(start, file_size - 1))
+            end = max(start, min(end, file_size - 1))
+            headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+            status_code = 206
+        except Exception:
+            start, end, status_code = 0, file_size - 1, 200
+    headers["Content-Length"] = str(end - start + 1)
+
+    async def iterfile():
+        # anyio.open_file lit de façon asynchrone → ne bloque pas la boucle
+        # d'événements Uvicorn, même quand les 6 stems sont demandés en
+        # parallèle.
+        f = await anyio.open_file(path, "rb")
+        try:
+            await f.seek(start)
+            remaining = end - start + 1
+            while remaining > 0:
+                chunk = await f.read(min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+        finally:
+            try:
+                await f.aclose()
+            except Exception:
+                pass
+
+    return StreamingResponse(iterfile(), status_code=status_code,
+                             headers=headers, media_type=media_type)
 
 
 @app.get("/", include_in_schema=False)
@@ -396,6 +470,12 @@ def track_detail(track_id: str):
             detail["chords"] = json.loads(chords_path.read_text("utf-8"))
         except Exception:
             detail["chords"] = None
+    lyrics_path = DATA_DIR / track_id / "lyrics.json"
+    if lyrics_path.exists():
+        try:
+            detail["lyrics"] = json.loads(lyrics_path.read_text("utf-8"))
+        except Exception:
+            detail["lyrics"] = None
     return detail
 
 
@@ -529,4 +609,8 @@ async def ws_status(ws: WebSocket, track_id: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=False)
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8000"))
+    # On passe l'objet `app` (pas la chaîne "main:app") : indispensable pour
+    # que uvicorn fonctionne dans le binaire PyInstaller.
+    uvicorn.run(app, host=host, port=port, reload=False)

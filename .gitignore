@@ -14,6 +14,7 @@ build/
 dist/
 .venv/
 venv/
+.venv_build/
 .pixi/
 
 # ── Tests / qualité ───────────────────────────────────────────────────────────
@@ -47,3 +48,7 @@ htmlcov/
 # Playwright CLI output (may contain credentials)
 .playwright-cli/
 .claude/
+.playwright/
+src-tauri/target/
+src-tauri/resources/engine/
+src-tauri/resources/bin/

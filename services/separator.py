@@ -17,8 +17,54 @@ import logging
 import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
+
+from demucs.separate import main as demucs_main
+
+import torch
+import torchaudio
+import soundfile as sf
+
+# --- Patch de compatibilité TorchAudio / Soundfile pour Demucs ------------- #
+# Les versions récentes de TorchAudio utilisent TorchCodec par défaut pour
+# `torchaudio.save`/`torchaudio.load` ; on redirige vers le backend `soundfile`
+# (déjà embarqué) pour ne pas dépendre de torchcodec.
+_orig_save = torchaudio.save
+
+
+def _safe_save(uri, src, sample_rate, **kwargs):
+    try:
+        # Tente d'abord avec le backend soundfile explicite
+        return _orig_save(uri, src, sample_rate, backend="soundfile", **kwargs)
+    except Exception:
+        # Fallback direct et infaillible via soundfile.write
+        # src est un Tensor PyTorch de dimensions (channels, samples)
+        tensor_data = src.detach().cpu().float().numpy()
+        # soundfile attend (samples, channels)
+        if tensor_data.ndim == 2:
+            data = tensor_data.T
+        else:
+            data = tensor_data
+        sf.write(str(uri), data, sample_rate)
+
+
+torchaudio.save = _safe_save
+
+
+# Sécurisation également de torchaudio.load par précaution
+_orig_load = torchaudio.load
+
+
+def _safe_load(uri, **kwargs):
+    try:
+        return _orig_load(uri, backend="soundfile", **kwargs)
+    except Exception:
+        data, sr = sf.read(str(uri), dtype="float32", always_2d=True)
+        # soundfile renvoie (samples, channels) -> (channels, samples)
+        return torch.from_numpy(data.T), sr
+
+
+torchaudio.load = _safe_load
 
 logger = logging.getLogger("guitarlab.separator")
 
@@ -70,31 +116,28 @@ def separate_stems(wav_path: Path, track_dir: Path, device: str = "cpu"):
     stems_dir.mkdir(parents=True, exist_ok=True)
 
     model = MODEL_6S
-    base = [
-        sys.executable, "-m", "demucs",
-        "-n", model,
-        "-d", device,
-        "--out", str(raw_out),
-        "--filename", "{stem}.{ext}",
-        "--segment", SEGMENT,
-        "--overlap", OVERLAP,
-        "--shifts", str(SHIFTS),
-        str(wav_path),
-    ]
-    # indice de l'argument "-n <model>" dans `base`
-    MODEL_IDX = 4
 
-    def _run_core() -> None:
-        _run(base, f"Demucs ({model})")
+    def _run_demucs(model_name: str) -> None:
+        args = [
+            "-n", model_name,
+            "-d", device,
+            "--out", str(raw_out),
+            "--filename", "{stem}.{ext}",
+            "--segment", SEGMENT,
+            "--overlap", OVERLAP,
+            "--shifts", str(SHIFTS),
+            str(wav_path),
+        ]
+        logger.info("Exécution Demucs interne (%s) sur %s", model_name, device)
+        demucs_main(args)
 
     try:
-        _run_core()
+        _run_demucs(model)
     except Exception as exc:  # noqa: BLE001
         if model == MODEL_6S:
-            logger.warning("htdemucs_6s en échec (%s) → repli %s", exc, MODEL_4S)
+            logger.warning("htdemucs_6s a échoué (%s), repli sur %s", exc, MODEL_4S)
             model = MODEL_4S
-            base[MODEL_IDX] = model
-            _run_core()
+            _run_demucs(model)
         else:
             raise
 

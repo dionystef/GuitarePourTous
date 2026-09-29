@@ -1,0 +1,27 @@
+[package]
+name = "guitar-lab"
+version = "1.0.0"
+description = "Guitar Lab — Studio IA (wrapper desktop Tauri)"
+authors = ["Guitar Lab"]
+edition = "2021"
+rust-version = "1.77.2"
+
+# Bibliothèque partagée : utilisée par main.rs et (en option) mobiles.
+[lib]
+name = "guitar_lab_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }
+
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
