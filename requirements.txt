@@ -37,3 +37,9 @@ mido==1.3.2              # backend de pretty_midi : exige mido < 2.x
 #   `pip install -U yt-dlp` (ou rebuild de l'image Docker) si un
 #   téléchargement échoue.
 yt-dlp>=2025.1.0
+
+# --- Transcription des paroles ---
+# faster-whisper (CT2, ~4x plus rapide que OpenAI Whisper) : transcrit la
+# piste vocale isolée en segments [start, end, text]. Le moteur C++ ctranslate2
+# est inclus dans le bundle PyInstaller (voir guitarlab-engine.spec).
+faster-whisper>=1.0.0
