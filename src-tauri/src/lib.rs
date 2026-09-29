@@ -9,11 +9,11 @@
 //! SIGKILL). Aucun `expect`/`unwrap` bloquant : l'app ne crash jamais.
 
 use std::{
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -32,8 +32,10 @@ const ENGINE_NAME: &str = "guitarlab-engine.exe";
 #[cfg(not(target_os = "windows"))]
 const ENGINE_NAME: &str = "guitarlab-engine";
 
-/// État partagé : poignée du sous-processus moteur.
-struct BackendState(Mutex<Option<Child>>);
+/// État partagé : poignée du sous-processus moteur (Arc pour les threads).
+struct BackendState {
+    child: Arc<Mutex<Option<Child>>>,
+}
 
 // --------------------------------------------------------------------------- //
 // Chemins & healthcheck
@@ -148,7 +150,7 @@ fn find_ffmpeg_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
 // Accès sous-processus (sans panic)
 // --------------------------------------------------------------------------- //
 fn lock_backend(state: &BackendState) -> std::sync::MutexGuard<'_, Option<Child>> {
-    match state.0.lock() {
+    match state.child.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     }
@@ -179,7 +181,37 @@ fn kill_backend(holder: &mut Option<Child>) {
 // --------------------------------------------------------------------------- //
 // Lancement du moteur autonome
 // --------------------------------------------------------------------------- //
-fn spawn_engine(app: &tauri::App) {
+/// Lit une sortie (stdout/stderr) ligne à ligne, l'écrit dans `engine.log`
+/// et l'injecte dans la page d'attente via `window.__addLog`.
+fn pipe_logs(
+    mut reader: impl BufRead,
+    win: tauri::WebviewWindow,
+    log: Arc<Mutex<Option<std::fs::File>>>,
+) {
+    let mut buf = String::new();
+    loop {
+        buf.clear();
+        match reader.read_line(&mut buf) {
+            Ok(0) => break,
+            Ok(_) => {
+                let line = buf.trim_end();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(mut guard) = log.lock() {
+                    if let Some(ref mut f) = *guard {
+                        let _ = writeln!(f, "{line}");
+                    }
+                }
+                let js = serde_json::to_string(line).unwrap_or_default();
+                let _ = win.eval(&format!("window.__addLog && window.__addLog({js});"));
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+fn spawn_engine(app: &tauri::App, win: tauri::WebviewWindow) {
     if backend_healthy() {
         eprintln!("[guitarlab] Moteur déjà opérationnel sur {BACKEND_PORT}.");
         return;
@@ -214,6 +246,9 @@ fn spawn_engine(app: &tauri::App) {
             }
         });
 
+    // Crée le dossier de données (contiendra engine.log).
+    let _ = std::fs::create_dir_all(&data_dir);
+
     // Ajoute le dossier ffmpeg au PATH pour les sous-processus `ffmpeg`/`ffprobe`.
     let mut env_path = std::env::var("PATH").unwrap_or_default();
     if let Some(ffdir) = find_ffmpeg_dir(app.handle()) {
@@ -232,8 +267,8 @@ fn spawn_engine(app: &tauri::App) {
         .env("PORT", BACKEND_PORT.to_string())
         .env("DATA_DIR", &data_dir)
         .env("PATH", &env_path)
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit());
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     #[cfg(target_os = "windows")]
     {
@@ -242,13 +277,67 @@ fn spawn_engine(app: &tauri::App) {
         cmd.creation_flags(CREATE_NO_WINDOW);
     }
 
-    match cmd.spawn()
-    {
-        Ok(child) => {
-            let state = app.state::<BackendState>();
-            let mut guard = lock_backend(&state);
-            *guard = Some(child);
-            drop(guard);
+    match cmd.spawn() {
+        Ok(mut child) => {
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+
+            {
+                let state = app.state::<BackendState>();
+                let mut guard = lock_backend(&state);
+                *guard = Some(child);
+            }
+
+            // Journal partagé entre les threads stdout/stderr.
+            let log_path = data_dir.join("engine.log");
+            let log_file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .ok();
+            let log: Arc<Mutex<Option<std::fs::File>>> = Arc::new(Mutex::new(log_file));
+
+            if let Some(stdout) = stdout {
+                let win_stdout = win.clone();
+                let log_stdout = Arc::clone(&log);
+                std::thread::spawn(move || {
+                    pipe_logs(BufReader::new(stdout), win_stdout, log_stdout);
+                });
+            }
+            if let Some(stderr) = stderr {
+                let win_stderr = win.clone();
+                let log_stderr = Arc::clone(&log);
+                std::thread::spawn(move || {
+                    pipe_logs(BufReader::new(stderr), win_stderr, log_stderr);
+                });
+            }
+
+            // Surveille un arrêt prématuré du moteur (crash avant `backend_healthy`).
+            let child_arc = app.state::<BackendState>().child.clone();
+            let mon_win = win.clone();
+            std::thread::spawn(move || loop {
+                if backend_healthy() {
+                    return;
+                }
+                let exited = {
+                    let mut guard = match child_arc.lock() {
+                        Ok(g) => g,
+                        Err(p) => p.into_inner(),
+                    };
+                    match guard.as_mut() {
+                        Some(child) => matches!(child.try_wait(), Ok(Some(_))),
+                        None => return,
+                    }
+                };
+                if exited {
+                    let msg = "❌ Le moteur s'est arrêté inopinément (vérifiez engine.log).";
+                    let js = serde_json::to_string(msg).unwrap_or_default();
+                    let _ = mon_win.eval(&format!("window.__addLog && window.__addLog({js});"));
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            });
+
             eprintln!("[guitarlab] Moteur lancé (data={})", data_dir.display());
         }
         Err(e) => {
@@ -293,7 +382,9 @@ fn purge_webkit_cache() {
 // Bootstrap
 // --------------------------------------------------------------------------- //
 pub fn run() {
-    let state = BackendState(Mutex::new(None));
+    let state = BackendState {
+        child: Arc::new(Mutex::new(None)),
+    };
 
     let app = tauri::Builder::default()
         .manage(state)
@@ -301,9 +392,6 @@ pub fn run() {
             // Purge le cache WebKitGTK au démarrage sous Linux (avant le moteur).
             #[cfg(not(target_os = "windows"))]
             purge_webkit_cache();
-
-            // Lance le moteur autonome (sans bloquer, sans paniquer).
-            spawn_engine(app);
 
             // Fenêtre : on ouvre sur la page d'attente embarquée, puis on
             // bascule vers le moteur dès qu'il répond (évite l'erreur réseau).
@@ -317,6 +405,10 @@ pub fn run() {
             .min_inner_size(960.0, 600.0)
             .devtools(true)
             .build()?;
+
+            // Lance le moteur autonome (sans bloquer, sans paniquer) en
+            // diffusant ses logs dans la page d'attente.
+            spawn_engine(app, win.clone());
 
             let win_clone = win.clone();
             std::thread::spawn(move || watch_backend(win_clone));
