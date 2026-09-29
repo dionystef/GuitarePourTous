@@ -1,0 +1,75 @@
+name: Build Windows (NSIS)
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Cache Rust build
+        uses: actions/cache@v4
+        with:
+          path: src-tauri/target
+          key: tauri-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Download ffmpeg / ffprobe
+        shell: pwsh
+        run: |
+          $binDir = "src-tauri/resources/bin"
+          New-Item -ItemType Directory -Force -Path $binDir | Out-Null
+          $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          $archive = "ffmpeg-master-latest-win64-gpl.zip"
+          Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile "$archive"
+          Expand-Archive -Path $archive -DestinationPath "ffmpeg-extract" -Force
+          $ffdir = Get-ChildItem -Path "ffmpeg-extract" -Directory | Select-Object -First 1
+          Copy-Item -Force "$($ffdir.FullName)/bin/ffmpeg.exe" "$binDir/ffmpeg.exe"
+          Copy-Item -Force "$($ffdir.FullName)/bin/ffprobe.exe" "$binDir/ffprobe.exe"
+
+      - name: Install PyTorch CPU (Windows)
+        run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+      - name: Install engine prerequisites
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build engine with PyInstaller
+        run: pyinstaller guitarlab-engine.spec
+
+      - name: Copy engine into Tauri resources
+        shell: pwsh
+        run: |
+          $dest = "src-tauri/resources/engine"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          Copy-Item -Recurse -Force "dist/guitarlab-engine/*" $dest
+
+      - name: Build Tauri bundle (NSIS)
+        run: npx @tauri-apps/cli build --bundles nsis
+
+      - name: Upload NSIS installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: guitarlab-windows-nsis
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

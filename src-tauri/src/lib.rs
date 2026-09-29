@@ -116,7 +116,11 @@ fn find_engine(app: &tauri::AppHandle) -> Option<PathBuf> {
 
 /// Localise `ffmpeg` embarqué et retourne son répertoire (ajouté au PATH).
 fn find_ffmpeg_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let names = ["ffmpeg.exe", "ffmpeg"];
+    #[cfg(not(target_os = "windows"))]
     let names = ["ffmpeg"];
+
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(res) = app.path().resource_dir() {
         for base in with_parents(&res, 3) {
@@ -151,11 +155,24 @@ fn lock_backend(state: &BackendState) -> std::sync::MutexGuard<'_, Option<Child>
 }
 
 fn kill_backend(holder: &mut Option<Child>) {
-    if let Some(child) = holder.take() {
-        let pid = child.id().to_string();
-        let _ = Command::new("kill").args(["-TERM", &pid]).status();
-        std::thread::sleep(Duration::from_millis(800));
-        let _ = Command::new("kill").args(["-KILL", &pid]).status();
+    if let Some(mut child) = holder.take() {
+        #[cfg(target_os = "windows")]
+        {
+            let pid = child.id().to_string();
+            // Tue l'arbre complet de processus (Python + workers éventuels)
+            let _ = Command::new("taskkill")
+                .args(["/F", "/T", "/PID", &pid])
+                .status();
+            let _ = child.kill();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let pid = child.id().to_string();
+            let _ = Command::new("kill").args(["-TERM", &pid]).status();
+            std::thread::sleep(Duration::from_millis(800));
+            let _ = Command::new("kill").args(["-KILL", &pid]).status();
+            let _ = child.kill();
+        }
     }
 }
 
@@ -180,27 +197,52 @@ fn spawn_engine(app: &tauri::App) {
     let data_dir = std::env::var("GUITARLAB_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
-                .join(".local").join("share").join("guitarlab").join("data")
+            #[cfg(target_os = "windows")]
+            {
+                if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
+                    PathBuf::from(appdata).join("GuitarLab").join("data")
+                } else if let Ok(userprofile) = std::env::var("USERPROFILE") {
+                    PathBuf::from(userprofile).join(".guitarlab").join("data")
+                } else {
+                    PathBuf::from(".").join("data")
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
+                    .join(".local").join("share").join("guitarlab").join("data")
+            }
         });
 
     // Ajoute le dossier ffmpeg au PATH pour les sous-processus `ffmpeg`/`ffprobe`.
     let mut env_path = std::env::var("PATH").unwrap_or_default();
     if let Some(ffdir) = find_ffmpeg_dir(app.handle()) {
-        env_path = format!("{}:{}", ffdir.display(), env_path);
+        #[cfg(target_os = "windows")]
+        let sep = ";";
+        #[cfg(not(target_os = "windows"))]
+        let sep = ":";
+        env_path = format!("{}{}{}", ffdir.display(), sep, env_path);
         eprintln!("[guitarlab] ffmpeg ajouté au PATH : {}", ffdir.display());
     }
 
     eprintln!("[guitarlab] Démarrage du moteur : {}", engine.display());
 
-    match Command::new(&engine)
-        .env("HOST", BACKEND_HOST)
+    let mut cmd = Command::new(&engine);
+    cmd.env("HOST", BACKEND_HOST)
         .env("PORT", BACKEND_PORT.to_string())
         .env("DATA_DIR", &data_dir)
         .env("PATH", &env_path)
         .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .spawn()
+        .stderr(Stdio::inherit());
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match cmd.spawn()
     {
         Ok(child) => {
             let state = app.state::<BackendState>();
@@ -234,8 +276,9 @@ fn watch_backend(win: tauri::WebviewWindow) {
 }
 
 // --------------------------------------------------------------------------- //
-// Purge du cache WebKit (évite les conflits de cache WebKitGTK / PWA)
+// Purge du cache WebKit (évite les conflits de cache WebKitGTK / PWA sous Linux)
 // --------------------------------------------------------------------------- //
+#[cfg(not(target_os = "windows"))]
 fn purge_webkit_cache() {
     if let Ok(home) = std::env::var("HOME") {
         let base = PathBuf::from(home);
@@ -255,7 +298,8 @@ pub fn run() {
     let app = tauri::Builder::default()
         .manage(state)
         .setup(|app| {
-            // Purge le cache WebKitGTK au démarrage (avant le moteur).
+            // Purge le cache WebKitGTK au démarrage sous Linux (avant le moteur).
+            #[cfg(not(target_os = "windows"))]
             purge_webkit_cache();
 
             // Lance le moteur autonome (sans bloquer, sans paniquer).

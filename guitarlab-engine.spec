@@ -6,16 +6,31 @@ datas = [('services', 'services'), ('static', 'static')]
 binaries = []
 hiddenimports = ['uvicorn', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on', 'fastapi', 'demucs', 'demucs.separate', 'torch', 'torchaudio', 'soundfile', 'scipy', 'madmom', 'librosa', 'yt_dlp']
 hiddenimports += collect_submodules('uvicorn')
-tmp_ret = collect_all('madmom')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('demucs')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('librosa')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('faster_whisper')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('ctranslate2')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+try:
+    tmp_ret = collect_all('madmom')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except Exception:
+    pass
+try:
+    tmp_ret = collect_all('demucs')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except Exception:
+    pass
+try:
+    tmp_ret = collect_all('librosa')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except Exception:
+    pass
+try:
+    tmp_ret = collect_all('faster_whisper')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except Exception:
+    pass
+try:
+    tmp_ret = collect_all('ctranslate2')
+    datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+except Exception:
+    pass
 
 
 a = Analysis(
