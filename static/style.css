@@ -215,16 +215,51 @@ em { font-style: normal; color: var(--accent-2); }
 #view-player { display: flex; flex-direction: column; gap: 14px; }
 
 .px-head { display: flex; align-items: center; gap: 14px; margin-bottom: 4px; }
+.px-actions { display: flex; align-items: center; gap: 10px; }
 .btn.icon { background: var(--panel); border: 1px solid var(--border-2); border-radius: 10px; width: 40px; height: 40px; font-size: 16px; display: grid; place-items: center; }
 .btn.icon:hover { color: var(--accent-2); border-color: var(--accent); }
 .px-title { flex: 1; min-width: 0; }
 .px-title h2 { margin: 0; font-size: 21px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .px-title .sub { color: var(--text-dim); font-size: 12.5px; display: flex; gap: 10px; flex-wrap: wrap; }
 
-/* transport -------------------------------------------------------------- */
+/* transport PC (1 seule ligne horizontale) ----------------------------- */
 .transport {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-  padding: 12px 16px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+.transport-row {
+  display: contents; /* Les sous-lignes fusionnent sur 1 ligne unique sur PC */
+}
+.transport-row .row-label {
+  display: none; /* Masqué sur PC : inutile sur une barre horizontale */
+}
+.speed-group {
+  display: inline-flex;
+  gap: 4px;
+}
+.tr-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.metro-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.metro-vol {
+  width: 54px;
+  height: 5px;
+}
+.seekbar {
+  flex: 1;
+  min-width: 160px;
 }
 .t-btn {
   width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--border-2);
@@ -845,10 +880,83 @@ input[type="range"].fader { width: 100%; }
   .mobile-tab-btn.active {
     background: rgba(var(--accent-rgb),.2); border-color: var(--accent); color: var(--accent-2);
   }
+  /* En-tête mobile : Titre tout en haut, Retour et Actions en-dessous */
+  .px-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .px-title {
+    order: 1;
+    width: 100%;
+  }
+  .px-title h2 {
+    font-size: 20px;
+    white-space: normal;
+    line-height: 1.25;
+    margin-bottom: 4px;
+  }
+  .px-title .sub {
+    font-size: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  #btn-back {
+    order: 2;
+  }
+  .px-actions {
+    order: 3;
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  /* Transport Mobile : 4 lignes empilées avec labels */
   .transport {
-    position: sticky; bottom: 10px; z-index: 50;
-    box-shadow: 0 10px 30px rgba(0,0,0,.7);
-    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+  }
+  .transport-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+  }
+  .transport-row .row-label {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--text-faint);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    min-width: 52px;
+  }
+  .transport-row.row-speed .speed-group {
+    flex: 1;
+    display: flex;
+  }
+  .transport-row.row-speed .sp-btn {
+    flex: 1;
+    text-align: center;
+  }
+  .transport-row.row-loop .tr-group {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .transport-row.row-metro {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .transport-row.row-metro .metro-vol {
+    width: 90px;
   }
   .px-grid { grid-template-columns: 1fr; }
   .chord-grid {
@@ -898,7 +1006,7 @@ input[type="range"].fader { width: 100%; }
   background: var(--panel);
   border: 1px solid var(--border);
   color: var(--text);
-  padding: 6px 12px;
+  padding: 8px 10px;
   border-radius: 999px;
   font-size: 12px;
   font-weight: 600;
@@ -908,6 +1016,9 @@ input[type="range"].fader { width: 100%; }
   gap: 6px;
   transition: all 0.2s ease;
   user-select: none;
+}
+.theme-toggle-btn .theme-label {
+  display: none !important;
 }
 .theme-toggle-btn:hover {
   border-color: var(--accent);
