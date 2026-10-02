@@ -2,12 +2,6 @@ name: Build Windows (NSIS)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feat/windows-app
-      - develop
-    tags:
-      - 'v*'
 
 jobs:
   build:
