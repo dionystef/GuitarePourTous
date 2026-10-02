@@ -667,14 +667,13 @@ function buildPlayer(track) {
       <div class="px-title">
         <h2>${esc(track.title)}</h2>
         <div class="sub">
-          <span>${esc(track.artist || '—')}</span>
-          <span>•</span><span>${fmtTime(track.duration || 0)}</span>
-          <span>•</span><span id="bpm-chip">${(chords.bpm || 0).toFixed(0)} BPM</span>
-          <span>•</span><span>${chords.bars.length} mesures</span>
+          <span class="sub-artist">${esc(track.artist || '—')}</span>
+          <span class="sub-sep">•</span><span class="sub-chip">${fmtTime(track.duration || 0)}</span>
+          <span class="sub-sep">•</span><span class="sub-chip" id="bpm-chip">${(chords.bpm || 0).toFixed(0)} BPM</span>
+          <span class="sub-sep">•</span><span class="sub-chip">${chords.bars.length} mesures</span>
         </div>
       </div>
       <div class="px-actions">
-        <!-- Transpose group existant -->
         <div class="transpose-group" title="Transposition des accords (demi-tons)">
           <span class="tr-lbl">Transpo</span>
           <button class="t-btn-tr" id="btn-trans-down" title="Descendre d'un demi-ton">-1</button>
@@ -683,37 +682,47 @@ function buildPlayer(track) {
           <button class="t-btn-enh" id="btn-trans-enh" title="Basculer dièses (#) / bémols (♭)">♭/#</button>
           <button class="t-btn-reset" id="btn-trans-reset" title="Rétablir tonalité d'origine">↺</button>
         </div>
-        <!-- SOLO & TABLATURE MIS EN PAUSE
-        <button class="btn ghost" id="btn-midi">MIDI <a id="midi-link" hidden></a></button>
-        <button class="btn ghost" id="btn-tab">Tablature</button>
-        -->
-        <button class="btn danger" id="btn-del">Supprimer</button>
+        <button class="btn danger" id="btn-del" title="Supprimer le morceau">Supprimer</button>
       </div>
     </div>
 
     <div class="transport" id="transport">
-      <button class="t-btn primary-cta" id="btn-play" title="Lecture / pause">▶</button>
-      <button class="t-btn" id="btn-stop" title="Stop">■</button>
-      <span class="t-time"><b id="t-cur">0:00</b> / <span id="t-tot">${fmtTime(track.duration)}</span></span>
-      <input type="range" class="seekbar" id="seek" min="0" max="100" step="0.01" value="0" />
-      <div class="speed-group" id="speed-group" title="Vitesse sans changement de hauteur">
-        <button class="sp-btn" data-speed="0.5">0.5×</button>
-        <button class="sp-btn" data-speed="0.75">0.75×</button>
-        <button class="sp-btn" data-speed="0.9">0.9×</button>
-        <button class="sp-btn active" data-speed="1">1.0×</button>
+      <!-- Ligne 1 : Lecture & progression -->
+      <div class="transport-row row-playback">
+        <button class="t-btn primary-cta" id="btn-play" title="Lecture / pause">▶</button>
+        <button class="t-btn" id="btn-stop" title="Stop">■</button>
+        <span class="t-time"><b id="t-cur">0:00</b> / <span id="t-tot">${fmtTime(track.duration)}</span></span>
+        <input type="range" class="seekbar" id="seek" min="0" max="100" step="0.01" value="0" />
       </div>
-      <div class="tr-group">
-        <button class="t-btn" id="btn-loop" title="Boucle A/B">⤾</button>
-        <button class="t-btn" id="btn-setA" title="Définir A = position">A</button>
-        <button class="t-btn" id="btn-setB" title="Définir B = position">B</button>
-        <span class="loop-info" id="loop-info">—</span>
+      <!-- Ligne 2 : Vitesse -->
+      <div class="transport-row row-speed" title="Vitesse sans changement de hauteur">
+        <span class="row-label">Vitesse</span>
+        <div class="speed-group" id="speed-group">
+          <button class="sp-btn" data-speed="0.5">0.5×</button>
+          <button class="sp-btn" data-speed="0.75">0.75×</button>
+          <button class="sp-btn" data-speed="0.9">0.9×</button>
+          <button class="sp-btn active" data-speed="1">1.0×</button>
+        </div>
       </div>
-<div class="metro-group" title="Volume du métronome">
-        <button class="t-btn" id="btn-metro" title="Activer / désactiver le métronome">♩</button>
-        <input type="range" class="metro-vol" id="metro-vol" min="0" max="100" value="70" title="Volume du métronome" />
+      <!-- Ligne 3 : Boucles A/B -->
+      <div class="transport-row row-loop">
+        <span class="row-label">Boucle</span>
+        <div class="tr-group">
+          <button class="t-btn" id="btn-loop" title="Activer / désactiver la boucle A/B">⤾</button>
+          <button class="t-btn" id="btn-setA" title="Définir point A">A</button>
+          <button class="t-btn" id="btn-setB" title="Définir point B">B</button>
+          <span class="loop-info" id="loop-info">—</span>
+        </div>
       </div>
-      <button class="t-btn" id="btn-bar-shift" title="Décaler le 1er temps (anacrouse / aligner le temps 1)">⇄ T1</button>
-      <span class="lbl" style="opacity:.6">♩</span>
+      <!-- Ligne 4 : Métronome & recalibrage -->
+      <div class="transport-row row-metro">
+        <span class="row-label">Rythme</span>
+        <div class="metro-group" title="Volume du métronome">
+          <button class="t-btn" id="btn-metro" title="Activer / désactiver le métronome">♩</button>
+          <input type="range" class="metro-vol" id="metro-vol" min="0" max="100" value="70" title="Volume du métronome" />
+        </div>
+        <button class="t-btn" id="btn-bar-shift" title="Décaler le 1er temps (anacrouse / aligner le temps 1)">⇄ T1</button>
+      </div>
     </div>
 
     <div class="mobile-tabs" id="mobile-tabs">
