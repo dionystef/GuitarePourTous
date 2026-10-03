@@ -261,6 +261,12 @@ em { font-style: normal; color: var(--accent-2); }
   flex: 1;
   min-width: 160px;
 }
+.t-btn-drawer {
+  display: none !important;
+}
+.transport-drawer {
+  display: contents; /* Les rangées s'intègrent naturellement sur la ligne PC */
+}
 .t-btn {
   width: 42px; height: 42px; border-radius: 10px; border: 1px solid var(--border-2);
   background: var(--panel-2); color: var(--text); font-size: 15px; cursor: pointer; display: grid; place-items: center;
@@ -484,7 +490,7 @@ input[type="range"].fader { width: 100%; }
 /* Karaoké vertical 3 lignes */
 .karaoke-stage {
   width: 100%;
-  min-height: 220px;
+  min-height: 300px;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -497,10 +503,10 @@ input[type="range"].fader { width: 100%; }
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 12px 16px;
+  padding: 14px 18px;
 }
 .k-line {
-  max-width: 82%;
+  max-width: 92%;
   text-align: center;
   line-height: 1.4;
   word-break: break-word;
@@ -511,12 +517,12 @@ input[type="range"].fader { width: 100%; }
               color 0.25s ease;
 }
 .k-line.k-cur {
-  font-size: 1.35rem;
+  font-size: clamp(1.4rem, 2.6vw, 1.8rem);
   font-weight: 700;
   color: #ffffff;
   text-shadow: 0 0 14px rgba(255, 255, 255, 0.25);
   transform: scale(1.04);
-  padding: 6px 18px;
+  padding: 8px 20px;
   background: rgba(255, 255, 255, 0.04);
   border-radius: 8px;
   border-left: 3px solid var(--accent);
@@ -524,7 +530,7 @@ input[type="range"].fader { width: 100%; }
   opacity: 1;
 }
 .k-line.k-cur.instrumental {
-  font-size: 1.05rem;
+  font-size: clamp(1rem, 1.9vw, 1.25rem);
   font-weight: 500;
   font-style: italic;
   color: #94a3b8;
@@ -534,7 +540,7 @@ input[type="range"].fader { width: 100%; }
   transform: scale(1);
 }
 .k-line.k-prev, .k-line.k-next {
-  font-size: 0.95rem;
+  font-size: clamp(0.95rem, 1.6vw, 1.1rem);
   color: #94a3b8;
 }
 .k-line.k-prev {
@@ -633,7 +639,89 @@ input[type="range"].fader { width: 100%; }
   background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
   padding: 12px 14px; overflow-x: auto;
 }
-.grid-title { font-size: 11px; text-transform: uppercase; letter-spacing: .14em; color: var(--text-faint); margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; }
+.grid-title {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .14em;
+  color: var(--text-faint);
+  margin: 0 0 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  transition: color .15s;
+}
+.grid-title:hover {
+  color: var(--text);
+}
+.grid-title-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.grid-accordion-chevron {
+  font-size: 13px;
+  color: var(--accent-2);
+  display: inline-block;
+  transition: transform .15s ease;
+}
+.grid-wrap.collapsed {
+  padding: 10px 14px;
+}
+.grid-wrap.collapsed .grid-title {
+  margin-bottom: 0;
+}
+.grid-wrap.collapsed .grid-viewport,
+.grid-wrap.collapsed .section-nav,
+.grid-wrap.collapsed #grid-tools {
+  display: none !important;
+}
+/* accordéons génériques (mixeur / visuel / grille) -------------------------- */
+.accordion-panel {
+  transition: all 0.2s ease;
+}
+.accordion-head {
+  cursor: pointer;
+  user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.accordion-chevron {
+  font-size: 13px;
+  color: var(--accent-2);
+  display: inline-block;
+  transition: transform .15s ease;
+}
+.accordion-panel.collapsed .accordion-body {
+  display: none !important;
+}
+.accordion-panel.collapsed {
+  padding-bottom: 10px !important;
+}
+.vis-head-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  width: 100%;
+}
+.vis-head-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .14em;
+  color: var(--text-faint);
+}
+.accordion-panel.collapsed .vis-head-bar {
+  margin-bottom: 0;
+}
+.accordion-panel.collapsed #vis-tabs {
+  display: none;
+}
 .grid-viewport {
   max-height: 440px;
   overflow-y: auto;
@@ -865,21 +953,7 @@ input[type="range"].fader { width: 100%; }
   .brand-sub { display: none; }
 }
 
-/* onglets mobiles & ergonomie mobile (inspiration Moises) -------------------- */
-.mobile-tabs { display: none; }
-
 @media (max-width: 768px) {
-  .mobile-tabs {
-    display: flex; gap: 8px; margin-bottom: 4px;
-  }
-  .mobile-tab-btn {
-    flex: 1; padding: 10px; border-radius: 10px; border: 1px solid var(--border-2);
-    background: var(--panel-2); color: var(--text-dim); font-weight: 700; font-size: 13px;
-    cursor: pointer; text-align: center; transition: .15s;
-  }
-  .mobile-tab-btn.active {
-    background: rgba(var(--accent-rgb),.2); border-color: var(--accent); color: var(--accent-2);
-  }
   /* En-tête mobile : Titre tout en haut, Retour et Actions en-dessous */
   .px-head {
     display: flex;
@@ -890,6 +964,7 @@ input[type="range"].fader { width: 100%; }
   }
   .px-title {
     order: 1;
+    flex: 0 0 100%;
     width: 100%;
   }
   .px-title h2 {
@@ -914,12 +989,67 @@ input[type="range"].fader { width: 100%; }
     align-items: center;
     gap: 6px;
   }
-  /* Transport Mobile : 4 lignes empilées avec labels */
+  /* Transport Mobile : reste en haut, se scotche sous la barre du haut au défilement */
   .transport {
+    position: sticky;
+    top: var(--topbar-h, 54px);
+    z-index: 100;
+    background: rgba(19, 26, 19, 0.95);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5), 0 0 0 1px var(--border);
+    border-radius: 14px;
+    padding: 8px 10px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
-    padding: 12px;
+    gap: 6px;
+  }
+  /* Ligne principale compacte */
+  .transport-row.row-playback {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+  }
+  .transport-row.row-playback .t-btn {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+  }
+  .transport-row.row-playback .t-time {
+    font-size: 11px;
+    min-width: 68px;
+    text-align: center;
+    flex-shrink: 0;
+  }
+  .transport-row.row-playback .seekbar {
+    flex: 1;
+    min-width: 60px;
+  }
+  /* Petite flèche toggle */
+  .t-btn-drawer {
+    display: grid !important;
+    place-items: center;
+    width: 34px !important;
+    height: 34px !important;
+    background: var(--panel-2);
+    border: 1px solid var(--border-2);
+    color: var(--accent-2);
+    font-size: 11px;
+    border-radius: 8px;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
+  /* Tiroir d'options replié par défaut sur mobile */
+  .transport-drawer {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 6px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+  }
+  .transport-drawer.open {
+    display: flex;
   }
   .transport-row {
     display: flex;
@@ -958,7 +1088,28 @@ input[type="range"].fader { width: 100%; }
   .transport-row.row-metro .metro-vol {
     width: 90px;
   }
-  .px-grid { grid-template-columns: 1fr; }
+  .px-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  /* Paroles plus grandes sur mobile */
+  .karaoke-stage { min-height: 260px; }
+  .k-line { max-width: 96%; }
+  /* Bibliothèque : 2 tuiles côte à côte compactes */
+  .library {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .card .thumb { height: 82px; }
+  .card .thumb .fallback { font-size: 22px; }
+  .card .thumb .chip { font-size: 9.5px; padding: 2px 7px; }
+  .card .thumb .card-del { width: 24px; height: 24px; font-size: 12px; top: 6px; right: 6px; }
+  .card-body { padding: 8px 10px 10px; gap: 4px; }
+  .card-body h3 { font-size: 12.5px; line-height: 1.25; }
+  .card-body .meta { font-size: 11px; }
+  .card-body .fade { font-size: 10px; }
+  .card-body .btn { padding: 7px 10px; font-size: 11px; }
   .chord-grid {
     grid-template-columns: repeat(4, 1fr);
     gap: 5px;
@@ -972,7 +1123,6 @@ input[type="range"].fader { width: 100%; }
   .beats { margin-top: 5px; gap: 2px; }
   .beat { height: 4px; }
   .b-tools { display: none !important; }
-  .tab-hidden-mobile { display: none !important; }
 }
 
 /* ======================== Thème Xbox Microsoft ======================== */

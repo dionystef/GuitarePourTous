@@ -658,6 +658,26 @@ function updateLyricsUI(t) {
   }
 }
 
+function bindAccordion(panelId, headId, chevronId, storageKey) {
+  const panel = $(panelId);
+  const head = $(headId);
+  const chevron = $(chevronId);
+  if (!panel || !head) return;
+  function apply(collapsed) {
+    panel.classList.toggle('collapsed', collapsed);
+    if (chevron) chevron.textContent = collapsed ? '▸' : '▾';
+    localStorage.setItem(storageKey, collapsed ? 'true' : 'false');
+  }
+  // Rétablir l'état persisté
+  const isCollapsed = localStorage.getItem(storageKey) === 'true';
+  apply(isCollapsed);
+  head.addEventListener('click', (e) => {
+    // Ne pas replier si on clique sur les onglets (accords/paroles) ou les boutons 4/8 de la grille
+    if (e.target.closest('#vis-tabs') || e.target.closest('#grid-tools')) return;
+    apply(!panel.classList.contains('collapsed'));
+  });
+}
+
 function buildPlayer(track) {
   const host = $('#view-player');
   const chords = track.chords || { bpm: track.bpm || 120, bars: [] };
@@ -682,73 +702,88 @@ function buildPlayer(track) {
           <button class="t-btn-enh" id="btn-trans-enh" title="Basculer dièses (#) / bémols (♭)">♭/#</button>
           <button class="t-btn-reset" id="btn-trans-reset" title="Rétablir tonalité d'origine">↺</button>
         </div>
-        <button class="btn danger" id="btn-del" title="Supprimer le morceau">Supprimer</button>
       </div>
     </div>
 
     <div class="transport" id="transport">
-      <!-- Ligne 1 : Lecture & progression -->
+      <!-- Ligne 1 : Lecture principale (toujours visible) -->
       <div class="transport-row row-playback">
         <button class="t-btn primary-cta" id="btn-play" title="Lecture / pause">▶</button>
         <button class="t-btn" id="btn-stop" title="Stop">■</button>
         <span class="t-time"><b id="t-cur">0:00</b> / <span id="t-tot">${fmtTime(track.duration)}</span></span>
         <input type="range" class="seekbar" id="seek" min="0" max="100" step="0.01" value="0" />
+        <!-- Bouton flèche accordéon pour mobile -->
+        <button class="t-btn t-btn-drawer" id="btn-transport-toggle" title="Afficher / masquer les réglages (vitesse, boucles, rythme)" aria-label="Réglages avancés">
+          <span id="transport-arrow">▲</span>
+        </button>
       </div>
-      <!-- Ligne 2 : Vitesse -->
-      <div class="transport-row row-speed" title="Vitesse sans changement de hauteur">
-        <span class="row-label">Vitesse</span>
-        <div class="speed-group" id="speed-group">
-          <button class="sp-btn" data-speed="0.5">0.5×</button>
-          <button class="sp-btn" data-speed="0.75">0.75×</button>
-          <button class="sp-btn" data-speed="0.9">0.9×</button>
-          <button class="sp-btn active" data-speed="1">1.0×</button>
+      <!-- Tiroir accordéon : Vitesse, Boucles, Rythme -->
+      <div class="transport-drawer" id="transport-drawer">
+        <!-- Ligne 2 : Vitesse -->
+        <div class="transport-row row-speed" title="Vitesse sans changement de hauteur">
+          <span class="row-label">Vitesse</span>
+          <div class="speed-group" id="speed-group">
+            <button class="sp-btn" data-speed="0.5">0.5×</button>
+            <button class="sp-btn" data-speed="0.75">0.75×</button>
+            <button class="sp-btn" data-speed="0.9">0.9×</button>
+            <button class="sp-btn active" data-speed="1">1.0×</button>
+          </div>
         </div>
-      </div>
-      <!-- Ligne 3 : Boucles A/B -->
-      <div class="transport-row row-loop">
-        <span class="row-label">Boucle</span>
-        <div class="tr-group">
-          <button class="t-btn" id="btn-loop" title="Activer / désactiver la boucle A/B">⤾</button>
-          <button class="t-btn" id="btn-setA" title="Définir point A">A</button>
-          <button class="t-btn" id="btn-setB" title="Définir point B">B</button>
-          <span class="loop-info" id="loop-info">—</span>
+        <!-- Ligne 3 : Boucles A/B -->
+        <div class="transport-row row-loop">
+          <span class="row-label">Boucle</span>
+          <div class="tr-group">
+            <button class="t-btn" id="btn-loop" title="Activer / désactiver la boucle A/B">⤾</button>
+            <button class="t-btn" id="btn-setA" title="Définir point A">A</button>
+            <button class="t-btn" id="btn-setB" title="Définir point B">B</button>
+            <span class="loop-info" id="loop-info">—</span>
+          </div>
         </div>
-      </div>
-      <!-- Ligne 4 : Métronome & recalibrage -->
-      <div class="transport-row row-metro">
-        <span class="row-label">Rythme</span>
-        <div class="metro-group" title="Volume du métronome">
-          <button class="t-btn" id="btn-metro" title="Activer / désactiver le métronome">♩</button>
-          <input type="range" class="metro-vol" id="metro-vol" min="0" max="100" value="70" title="Volume du métronome" />
+        <!-- Ligne 4 : Métronome & recalibrage -->
+        <div class="transport-row row-metro">
+          <span class="row-label">Rythme</span>
+          <div class="metro-group" title="Volume du métronome">
+            <button class="t-btn" id="btn-metro" title="Activer / désactiver le métronome">♩</button>
+            <input type="range" class="metro-vol" id="metro-vol" min="0" max="100" value="70" title="Volume du métronome" />
+          </div>
+          <button class="t-btn" id="btn-bar-shift" title="Décaler le 1er temps (anacrouse / aligner le temps 1)">⇄ T1</button>
         </div>
-        <button class="t-btn" id="btn-bar-shift" title="Décaler le 1er temps (anacrouse / aligner le temps 1)">⇄ T1</button>
       </div>
     </div>
 
-    <div class="mobile-tabs" id="mobile-tabs">
-      <button class="mobile-tab-btn active" data-tab="chords">🎸 Accords &amp; Grille</button>
-      <button class="mobile-tab-btn" data-tab="mixer">🎛️ Mixeur Stems</button>
-    </div>
     <div class="px-grid">
-      <aside class="mixer">
-        <div class="mixer-title">Mixeur / stems</div>
-        <div id="channels"></div>
-        <div class="ch master-ch">
-          <span class="color"></span>
-          <div class="meta">
-            <div class="name">Volume Général</div>
-            <div class="lvl" id="lvl-master">100 %</div>
+      <!-- Accordéon 1 : Mixeur Stems -->
+      <aside class="mixer accordion-panel" id="panel-mixer">
+        <div class="mixer-title accordion-head" id="head-mixer" title="Cliquer pour replier / déplier le mixeur">
+          <span class="accordion-chevron" id="chevron-mixer">▾</span>
+          <span>Mixeur / stems</span>
+        </div>
+        <div class="accordion-body" id="body-mixer">
+          <div id="channels"></div>
+          <div class="ch master-ch">
+            <span class="color"></span>
+            <div class="meta">
+              <div class="name">Volume Général</div>
+              <div class="lvl" id="lvl-master">100 %</div>
+            </div>
+            <input type="range" class="fader" id="fd-master" min="0" max="100" value="100" title="Volume général du morceau" />
+            <button class="ms mute" id="ms-mute-master" title="Couper tout le son">M</button>
           </div>
-          <input type="range" class="fader" id="fd-master" min="0" max="100" value="100" title="Volume général du morceau" />
-          <button class="ms mute" id="ms-mute-master" title="Couper tout le son">M</button>
         </div>
       </aside>
-      <aside class="chord-now" id="vis-panel">
-        <div class="vis-tabs">
-          <button type="button" class="vis-tab-btn" id="vis-tab-chords" data-tab="chords">🎸 Accords</button>
-          <button type="button" class="vis-tab-btn" id="vis-tab-lyrics" data-tab="lyrics">🎤 Paroles</button>
+      <!-- Accordéon 2 : Accords & Paroles -->
+      <aside class="chord-now accordion-panel" id="vis-panel">
+        <div class="accordion-head vis-head-bar" id="head-vis" title="Cliquer pour replier / déplier">
+          <div class="vis-head-left">
+            <span class="accordion-chevron" id="chevron-vis">▾</span>
+            <span class="vis-head-label">Accords &amp; Paroles</span>
+          </div>
+          <div class="vis-tabs" id="vis-tabs">
+            <button type="button" class="vis-tab-btn" id="vis-tab-chords" data-tab="chords">🎸 Accords</button>
+            <button type="button" class="vis-tab-btn" id="vis-tab-lyrics" data-tab="lyrics">🎤 Paroles</button>
+          </div>
         </div>
-        <div class="vis-content">
+        <div class="accordion-body vis-content" id="body-vis">
           <!-- Vue Accords -->
           <div class="vis-pane" id="vis-pane-chords">
             <div class="chord-stage" id="chord-stage">
@@ -777,11 +812,14 @@ function buildPlayer(track) {
       </aside>
     </div>
 
-    <div class="grid-wrap">
-      <div class="grid-title">
-        <span>Grille d'accords — Vue 16 mesures (anticipée)</span>
-        <div class="grid-cols-toggle">
-          <button class="btn-reset-grid" id="btn-reset-grid" title="Annuler tous les sauts de ligne et revenir à la grille 4x4 standard">↺ Réinitialiser</button>
+    <div class="grid-wrap" id="grid-wrap">
+      <div class="grid-title" id="grid-header" title="Cliquer pour replier / déplier la grille d'accords">
+        <div class="grid-title-left">
+          <span class="grid-accordion-chevron" id="grid-chevron">▾</span>
+          <span>Grille d'accords — Vue 16 mesures (anticipée)</span>
+        </div>
+        <div class="grid-cols-toggle" id="grid-tools">
+          <button class="btn-reset-grid" id="btn-reset-grid" title="Annuler tous les sauts de ligne et revenir à la grille standard">↺ Réinitialiser</button>
           <button id="btn-col-4" class="active" title="4 mesures par ligne">4 / ligne</button>
           <button id="btn-col-8" title="8 mesures par ligne">8 / ligne</button>
         </div>
@@ -792,6 +830,22 @@ function buildPlayer(track) {
       </div>
     </div>
   `;
+
+  // Activation des 3 accordéons
+  bindAccordion('#panel-mixer', '#head-mixer', '#chevron-mixer', 'guitarlab_mixer_collapsed');
+  bindAccordion('#vis-panel', '#head-vis', '#chevron-vis', 'guitarlab_vis_collapsed');
+  bindAccordion('#grid-wrap', '#grid-header', '#grid-chevron', 'guitarlab_grid_collapsed');
+
+  const btnTransportToggle = $('#btn-transport-toggle');
+  const transportDrawer = $('#transport-drawer');
+  const transportArrow = $('#transport-arrow');
+  btnTransportToggle?.addEventListener('click', () => {
+    if (!transportDrawer) return;
+    const isOpen = transportDrawer.classList.toggle('open');
+    if (transportArrow) {
+      transportArrow.textContent = isOpen ? '▼' : '▲';
+    }
+  });
 
   const engine = new AudioEngine(track);
   App.engine = engine;
@@ -1071,22 +1125,6 @@ function buildPlayer(track) {
     fetch(`/api/tracks/${track.id}/bar-offset`, { method: 'POST', body: fd }).catch(console.error);
   });
 
-  // onglets mobiles : bascule Mixeur / Accords
-  $('#mobile-tabs')?.addEventListener('click', (e) => {
-    const btn = e.target.closest('.mobile-tab-btn');
-    if (!btn) return;
-    $$('.mobile-tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    const isMixer = btn.dataset.tab === 'mixer';
-    $('.mixer').classList.toggle('tab-hidden-mobile', !isMixer);
-    $('.chord-now').classList.toggle('tab-hidden-mobile', isMixer);
-    $('.grid-wrap').classList.toggle('tab-hidden-mobile', isMixer);
-  });
-  // État initial sur mobile : mixer caché au profit des accords
-  if (window.innerWidth <= 768) {
-    $('.mixer')?.classList.add('tab-hidden-mobile');
-  }
-
   // transport
   $('#btn-back')?.addEventListener('click', showHome);
 
@@ -1186,13 +1224,6 @@ function buildPlayer(track) {
   //     openModal('Tablature (solo / lead)', body, track);
   //   } catch (_) { alert('Impossible de charger la tablature.'); }
   // };
-  $('#btn-del').onclick = async () => {
-    if (!confirm('Supprimer définitivement ce morceau ?')) return;
-    engine.destroy();
-    await API.remove(track.id);
-    showHome();
-  };
-
   // chargement des stems
   engine.load().then(() => {
     $('#btn-play').disabled = false;
@@ -1387,6 +1418,14 @@ async function init() {
       keys.forEach(k => caches.delete(k));
     }
   } catch (_) { /* purge secondaire */ }
+
+  // Mesure la hauteur de la barre du haut pour caler le lecteur sticky en dessous
+  const topbarEl = document.querySelector('.topbar');
+  function syncTopbarH() {
+    if (topbarEl) document.documentElement.style.setProperty('--topbar-h', topbarEl.offsetHeight + 'px');
+  }
+  syncTopbarH();
+  window.addEventListener('resize', syncTopbarH);
 
   // chip device
   try {
