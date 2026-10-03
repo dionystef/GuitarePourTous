@@ -8,3 +8,7 @@ __pycache__
 .env
 .venv
 venv
+src-tauri
+build
+dist
+.venv_build
