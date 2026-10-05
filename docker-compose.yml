@@ -47,6 +47,9 @@ services:
       # sans rebuild (services/ + main.py).
       - ./services:/app/services:ro
       - ./main.py:/app/main.py:ro
+      # Dépôt Git monté en lecture seule — permet de lire la version (tags /
+      # commits) sans rebuild.
+      - ./.git:/app/.git:ro
       # Cache des modèles (demucs / basic-pitch / madmom) pour ne pas les
       # retélécharger à chaque rebuild.
       - model_cache:/models

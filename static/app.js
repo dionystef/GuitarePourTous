@@ -1427,13 +1427,22 @@ async function init() {
   syncTopbarH();
   window.addEventListener('resize', syncTopbarH);
 
-  // chip device
+  // chip device & version dynamique
   try {
     const h = await API.health();
     const chip = $('#device-chip');
-    chip.textContent = h.device.toUpperCase();
-    if (h.device !== 'cuda') chip.classList.add('cpu');
-  } catch (_) { $('#device-chip').textContent = 'OFFLINE'; }
+    if (chip) {
+      chip.textContent = h.device.toUpperCase();
+      if (h.device !== 'cuda') chip.classList.add('cpu');
+    }
+    if (h.version) {
+      const vEl = $('#app-version');
+      if (vEl) vEl.textContent = h.version;
+    }
+  } catch (_) {
+    const chip = $('#device-chip');
+    if (chip) chip.textContent = 'OFFLINE';
+  }
 
   // navigation bibliothèque
   $('#btn-nav-home')?.addEventListener('click', showHome);

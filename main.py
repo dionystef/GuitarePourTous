@@ -70,6 +70,34 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # --------------------------------------------------------------------------- #
+# Version de l'application (tag Git, commit, ou repli)
+# --------------------------------------------------------------------------- #
+def get_git_version() -> str:
+    """Retourne le tag Git courant ou le commit abrégé, avec repli propre."""
+    # 1. Variable d'environnement explicite si définie
+    if os.environ.get("APP_VERSION"):
+        return os.environ["APP_VERSION"]
+    # 2. Exécution de git describe
+    try:
+        import subprocess
+        tag = subprocess.check_output(
+            ["git", "describe", "--tags", "--always"],
+            cwd=str(HERE),
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        if tag:
+            return tag
+    except Exception:
+        pass
+    # 3. Repli par défaut
+    return "v1.1.2"
+
+
+APP_VERSION = get_git_version()
+
+
+# --------------------------------------------------------------------------- #
 # Device de calcul (fallback CPU automatique)
 # --------------------------------------------------------------------------- #
 def resolve_device() -> str:
@@ -449,7 +477,12 @@ def index():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "device": DEVICE, "data_dir": str(DATA_DIR)}
+    return {
+        "status": "ok",
+        "version": APP_VERSION,
+        "device": DEVICE,
+        "data_dir": str(DATA_DIR),
+    }
 
 
 @app.get("/api/tracks")
