@@ -190,7 +190,7 @@ def fetch_lrclib(title: str, artist: str = "", duration: float | None = None) ->
 # 3. Fallback Whisper renforcé
 # --------------------------------------------------------------------------- #
 def transcribe_vocals_fallback(vocals_path: Path, model_size: str = "small") -> list[dict]:
-    """Transcrit le stem vocal en français (VAD actif, anti-hallucinations)."""
+    """Transcrit le stem vocal (auto-détection de langue, VAD actif, anti-hallucinations)."""
     from faster_whisper import WhisperModel
     import torch
 
@@ -213,7 +213,7 @@ def transcribe_vocals_fallback(vocals_path: Path, model_size: str = "small") -> 
 
     segments_iter, _info = model.transcribe(
         str(vocals_path),
-        language="fr",
+        language=None,
         beam_size=5,
         vad_filter=True,
         condition_on_previous_text=False,
