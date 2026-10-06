@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import urllib.parse
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -217,6 +218,18 @@ def fetch_youtube_title(url: str) -> "str | None":
         return None
 
 
+def _download_thumbnail(url: str, dest: Path) -> None:
+    """Télécharge la pochette locale (best-effort, ne fait jamais échouer l'ingestion)."""
+    try:
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            data = resp.read()
+        if data:
+            dest.write_bytes(data)
+            logger.info("Pochette enregistrée : %s", dest.name)
+    except Exception as exc:  # noqa: BLE001 — la miniature reste optionnelle
+        logger.warning("Échec du téléchargement de la miniature %s : %s", url, exc)
+
+
 def ingest_youtube(url: str, track_dir: Path):
     """Télécharge la meilleure piste audio disponible et la normalise.
 
@@ -243,11 +256,34 @@ def ingest_youtube(url: str, track_dir: Path):
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=True)
 
-    title = (info.get("title") or Path(info.get("_filename") or "").stem
-             or "Titre inconnu")
-    artist = info.get("artist") or info.get("uploader") or "Inconnu"
-    duration = float(info.get("duration") or 0.0)
-    thumbnail = info.get("thumbnail")
+    # Détection d'un flux « playlist / album » (cas typique YouTube Music) : on
+    # extrait les métadonnées de la première entrée valide plutôt que du wrapper.
+    entries = info.get("entries")
+    entry = next((e for e in entries if e), None) if entries else None
+    if entry is None:
+        entry = info  # vidéo simple : les métadonnées sont au niveau racine
+
+    title = (entry.get("title") or info.get("title")
+             or Path(info.get("_filename") or "").stem or "Titre inconnu")
+    artist = (entry.get("artist") or entry.get("uploader")
+              or info.get("artist") or info.get("uploader") or "Inconnu")
+    duration = float(entry.get("duration") or info.get("duration") or 0.0)
+    thumbnail = entry.get("thumbnail") or info.get("thumbnail")
+    if not thumbnail:
+        thumb_entry = entry.get("thumbnails") or []
+        thumb_info = info.get("thumbnails") or []
+        if thumb_entry:
+            thumbnail = thumb_entry[-1].get("url")
+        elif thumb_info:
+            thumbnail = thumb_info[-1].get("url")
+
+    # Téléchargement local de la pochette (best-effort) : la miniature échouant
+    # ne doit jamais faire échouer l'ingestion. Le chemin servi correspond à
+    # l'exposition ``/data/<id>/…`` du backend.
+    if thumbnail:
+        _download_thumbnail(thumbnail, track_dir / "thumbnail.jpg")
+    local_thumbnail = f"/data/{track_dir.name}/thumbnail.jpg" \
+        if (track_dir / "thumbnail.jpg").exists() else None
 
     candidates = sorted(p for p in source_dir.glob("yt.*"))
     raw = next(
@@ -272,7 +308,7 @@ def ingest_youtube(url: str, track_dir: Path):
         "title": title,
         "artist": artist,
         "duration": round(duration, 2),
-        "thumbnail": thumbnail,
+        "thumbnail": local_thumbnail,
         "source": "youtube",
         "source_url": url,
         "created_at": _utc(),

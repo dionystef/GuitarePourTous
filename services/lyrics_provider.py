@@ -27,7 +27,7 @@ TIMEOUT = 4.0
 # évite qu'un blocage réseau/modèle ne gèle indéfiniment le pipeline.
 TRANSCRIBE_TIMEOUT = float(os.environ.get("TRANSCRIBE_TIMEOUT_SECS", "900"))
 
-from services.lyrics_transcriber import MODELS_DIR  # noqa: E402
+from services.lyrics_transcriber import MODELS_DIR, _is_hallucinated  # noqa: E402
 
 
 def _write_json(path, lyrics) -> None:
@@ -101,6 +101,7 @@ def parse_lrc(lrc: str) -> list[dict]:
 # Nettoyage du titre (suffixes YouTube)
 # --------------------------------------------------------------------------- #
 _BRACKETED = re.compile(r"[\(\[].*?[\)\]]", re.IGNORECASE)
+_ALBUM_PREFIX = re.compile(r"^(?:album)\s*[-–—:]\s*", re.IGNORECASE)
 _KEYWORDS = ("official", "clip", "video", "lyric", "audio", "hd", "4k", "mv", "remastered")
 
 
@@ -111,6 +112,10 @@ def clean_title(title: str) -> str:
         seg = m.group(0)
         if any(k in seg.lower() for k in _KEYWORDS):
             title = title.replace(seg, " ")
+    # Les pistes issues d'un album YouTube Music sont préfixées de « Album - » :
+    # on retire ce préfixe avant la normalisation des tirets, sinon il fusionne
+    # avec le titre.
+    title = _ALBUM_PREFIX.sub("", title)
     title = re.sub(r"[\(\)\[\]{}]", " ", title)
     title = re.sub(r"[-–—|]+", " ", title)
     title = re.sub(r"\s+", " ", title).strip()
@@ -169,6 +174,10 @@ def fetch_lrclib(title: str, artist: str = "", duration: float | None = None) ->
     clean = clean_title(title)
     if not clean:
         return None
+    # LRCLIB ne connaît pas l'artiste générique « Inconnu » / « Unknown » : ne pas
+    # envoyer un filtre d'artiste invalide qui ferait échouer la recherche.
+    if artist and artist.strip().lower() in ("inconnu", "unknown"):
+        artist = ""
     lrc = _get_synced_via_get(clean, artist, duration)
     if not lrc:
         lrc = _get_synced_via_search(clean, artist)
@@ -212,7 +221,7 @@ def transcribe_vocals_fallback(vocals_path: Path, model_size: str = "small") -> 
     return [
         {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
         for s in segments_iter
-        if s.text.strip()
+        if s.text.strip() and not _is_hallucinated(s.text)
     ]
 
 
