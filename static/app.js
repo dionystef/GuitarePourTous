@@ -19,7 +19,13 @@ const fmtTime = (t) => {
 const API = {
   async json(url, opts) {
     const r = await fetch(url, opts);
-    if (!r.ok) throw new Error((await r.text().catch(() => '')) || r.statusText);
+    if (!r.ok) {
+      const e = new Error((await r.text().catch(() => '')) || r.statusText);
+      // Porte le code HTTP : permet aux appelants (ex. suivi d'un morceau
+      // supprimé → 404) de discriminer la cause avant de choisir la réaction.
+      e.status = r.status;
+      throw e;
+    }
     return r.json();
   },
   health:   () => API.json('/api/health'),
@@ -1381,8 +1387,16 @@ function monitorJob(id, autoOpen = true) {
 
   const iv = setInterval(async () => {
     if (usingWs || finished) return;
-    try { const s = await API.status(id); if (s && s.status !== 'unknown') jobRender(s); if (s && (s.status === 'ready' || s.status === 'error')) finish(s.status); }
-    catch (_) { /* backend pas encore joignable */ }
+    try {
+      const s = await API.status(id);
+      if (s && s.status !== 'unknown') jobRender(s);
+      if (s && (s.status === 'ready' || s.status === 'error')) finish(s.status);
+    } catch (e) {
+      // 404 : le morceau n'existe plus (supprimé entre-temps) → on stoppe le
+      // suivi et on nettoie `guitarlab_active_job` via `finish('error')`.
+      if (e && e.status === 404) finish('error');
+      // sinon (backend pas encore joignable) : on réessaiera au tick suivant.
+    }
   }, 1600);
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
