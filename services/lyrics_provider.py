@@ -7,7 +7,10 @@ Stratégie :
 from __future__ import annotations
 import json
 import logging
+import os
+import queue
 import re
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -20,14 +23,42 @@ UA = "GuitarLab/1.0"
 LRCLIB_GET = "https://lrclib.net/api/get"
 LRCLIB_SEARCH = "https://lrclib.net/api/search"
 TIMEOUT = 4.0
+# Garde-fou sur la transcription Whisper (chargement du modèle + inférence) :
+# évite qu'un blocage réseau/modèle ne gèle indéfiniment le pipeline.
+TRANSCRIBE_TIMEOUT = float(os.environ.get("TRANSCRIBE_TIMEOUT_SECS", "900"))
 
-from services.lyrics_transcriber import MODELS_DIR  # noqa: E402
+from services.lyrics_transcriber import MODELS_DIR, _is_hallucinated  # noqa: E402
 
 
 def _write_json(path, lyrics) -> None:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(lyrics, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _run_with_timeout(func, timeout: float, *args, **kwargs):
+    """Exécute ``func(*args)`` dans un thread daemon et attend le résultat.
+
+    Lève ``TimeoutError`` si le délai est dépassé. Le thread est daemon pour
+    ne pas bloquer l'arrêt du process (il se termine seul).
+    """
+    q: queue.Queue = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        try:
+            q.put((True, func(*args, **kwargs)))
+        except Exception as exc:  # noqa: BLE001 — propagé via la queue
+            q.put((False, exc))
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    try:
+        ok, val = q.get(timeout=timeout)
+    except queue.Empty:
+        raise TimeoutError(f"{getattr(func, '__name__', 'tâche')} dépassée ({timeout}s)")
+    if ok:
+        return val
+    raise val
 
 
 # --------------------------------------------------------------------------- #
@@ -70,6 +101,7 @@ def parse_lrc(lrc: str) -> list[dict]:
 # Nettoyage du titre (suffixes YouTube)
 # --------------------------------------------------------------------------- #
 _BRACKETED = re.compile(r"[\(\[].*?[\)\]]", re.IGNORECASE)
+_ALBUM_PREFIX = re.compile(r"^(?:album)\s*[-–—:]\s*", re.IGNORECASE)
 _KEYWORDS = ("official", "clip", "video", "lyric", "audio", "hd", "4k", "mv", "remastered")
 
 
@@ -80,6 +112,10 @@ def clean_title(title: str) -> str:
         seg = m.group(0)
         if any(k in seg.lower() for k in _KEYWORDS):
             title = title.replace(seg, " ")
+    # Les pistes issues d'un album YouTube Music sont préfixées de « Album - » :
+    # on retire ce préfixe avant la normalisation des tirets, sinon il fusionne
+    # avec le titre.
+    title = _ALBUM_PREFIX.sub("", title)
     title = re.sub(r"[\(\)\[\]{}]", " ", title)
     title = re.sub(r"[-–—|]+", " ", title)
     title = re.sub(r"\s+", " ", title).strip()
@@ -138,6 +174,10 @@ def fetch_lrclib(title: str, artist: str = "", duration: float | None = None) ->
     clean = clean_title(title)
     if not clean:
         return None
+    # LRCLIB ne connaît pas l'artiste générique « Inconnu » / « Unknown » : ne pas
+    # envoyer un filtre d'artiste invalide qui ferait échouer la recherche.
+    if artist and artist.strip().lower() in ("inconnu", "unknown"):
+        artist = ""
     lrc = _get_synced_via_get(clean, artist, duration)
     if not lrc:
         lrc = _get_synced_via_search(clean, artist)
@@ -150,7 +190,7 @@ def fetch_lrclib(title: str, artist: str = "", duration: float | None = None) ->
 # 3. Fallback Whisper renforcé
 # --------------------------------------------------------------------------- #
 def transcribe_vocals_fallback(vocals_path: Path, model_size: str = "small") -> list[dict]:
-    """Transcrit le stem vocal en français (VAD actif, anti-hallucinations)."""
+    """Transcrit le stem vocal (auto-détection de langue, VAD actif, anti-hallucinations)."""
     from faster_whisper import WhisperModel
     import torch
 
@@ -173,7 +213,7 @@ def transcribe_vocals_fallback(vocals_path: Path, model_size: str = "small") -> 
 
     segments_iter, _info = model.transcribe(
         str(vocals_path),
-        language="fr",
+        language=None,
         beam_size=5,
         vad_filter=True,
         condition_on_previous_text=False,
@@ -181,7 +221,7 @@ def transcribe_vocals_fallback(vocals_path: Path, model_size: str = "small") -> 
     return [
         {"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()}
         for s in segments_iter
-        if s.text.strip()
+        if s.text.strip() and not _is_hallucinated(s.text)
     ]
 
 
@@ -203,7 +243,10 @@ def resolve_lyrics(
 
     if vocals_path and Path(vocals_path).exists():
         try:
-            lyrics = transcribe_vocals_fallback(vocals_path)
+            # Timeout borné : évite qu'un blocage du modèle (téléchargement ou
+            # inférence infinie) ne fige le pipeline.
+            lyrics = _run_with_timeout(
+                transcribe_vocals_fallback, TRANSCRIBE_TIMEOUT, vocals_path)
             _write_json(output_json, lyrics)
             return lyrics, "whisper"
         except Exception as exc:

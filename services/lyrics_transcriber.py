@@ -3,12 +3,28 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 logger = logging.getLogger("guitarlab.lyrics")
 
 _default_models = Path.home() / ".local" / "share" / "guitarlab" / "models"
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", _default_models))
+
+# Artefacts fréquents produits par whisper (habillage des sous-titres, crédits,
+# mentions de services de transcription) : on les écarte pour ne pas polluer les
+# paroles affichées. Insensible à la casse.
+_HALLUCINATION_PATTERNS = [
+    re.compile(r"amara\.org", re.IGNORECASE),
+    re.compile(r"sous-titres réalisés par", re.IGNORECASE),
+    re.compile(r"transcription réalisée par", re.IGNORECASE),
+    re.compile(r"sous-titrage", re.IGNORECASE),
+]
+
+
+def _is_hallucinated(text: str) -> bool:
+    """Vrai si le segment correspond à un motif anti-hallucination connu."""
+    return any(p.search(text) for p in _HALLUCINATION_PATTERNS)
 
 
 def is_model_cached(model_size: str = "small") -> bool:
@@ -67,7 +83,7 @@ def transcribe_vocals(
             "text": seg.text.strip(),
         }
         for seg in segments_iter
-        if seg.text.strip()
+        if seg.text.strip() and not _is_hallucinated(seg.text)
     ]
 
     logger.info("✔ %d segments paroles extraits (langue: %s)", len(lyrics), info.language)
