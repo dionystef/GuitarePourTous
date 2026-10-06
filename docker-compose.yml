@@ -30,8 +30,9 @@ services:
     container_name: guitarlab
     restart: unless-stopped
     # Réseau de l'hôte : le VPN du travail neutralise le pont Docker (déjà
-    # utilisé pour le build). L'app écoute alors directement sur 127.0.0.1:8005
-    # → http://localhost:8005 (plus de « ports: » à publier).
+    # utilisé pour le build). L'app écoute alors directement sur l'hôte
+    # (plus de « ports: » à publier). Uvicorn écoute sur 0.0.0.0 afin que
+    # l'application soit joignable depuis un smartphone sur le réseau local.
     network_mode: host
     environment:
       DATA_DIR: /app/data
@@ -53,7 +54,7 @@ services:
       # Cache des modèles (demucs / basic-pitch / madmom) pour ne pas les
       # retélécharger à chaque rebuild.
       - model_cache:/models
-    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8005"]
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8005", "--ws-max-size", "4194304"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8005/api/health', timeout=5)"]
       interval: 30s

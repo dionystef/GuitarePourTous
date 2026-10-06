@@ -7,7 +7,10 @@ Stratégie :
 from __future__ import annotations
 import json
 import logging
+import os
+import queue
 import re
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -20,6 +23,9 @@ UA = "GuitarLab/1.0"
 LRCLIB_GET = "https://lrclib.net/api/get"
 LRCLIB_SEARCH = "https://lrclib.net/api/search"
 TIMEOUT = 4.0
+# Garde-fou sur la transcription Whisper (chargement du modèle + inférence) :
+# évite qu'un blocage réseau/modèle ne gèle indéfiniment le pipeline.
+TRANSCRIBE_TIMEOUT = float(os.environ.get("TRANSCRIBE_TIMEOUT_SECS", "900"))
 
 from services.lyrics_transcriber import MODELS_DIR  # noqa: E402
 
@@ -28,6 +34,31 @@ def _write_json(path, lyrics) -> None:
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(lyrics, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _run_with_timeout(func, timeout: float, *args, **kwargs):
+    """Exécute ``func(*args)`` dans un thread daemon et attend le résultat.
+
+    Lève ``TimeoutError`` si le délai est dépassé. Le thread est daemon pour
+    ne pas bloquer l'arrêt du process (il se termine seul).
+    """
+    q: queue.Queue = queue.Queue(maxsize=1)
+
+    def worker() -> None:
+        try:
+            q.put((True, func(*args, **kwargs)))
+        except Exception as exc:  # noqa: BLE001 — propagé via la queue
+            q.put((False, exc))
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    try:
+        ok, val = q.get(timeout=timeout)
+    except queue.Empty:
+        raise TimeoutError(f"{getattr(func, '__name__', 'tâche')} dépassée ({timeout}s)")
+    if ok:
+        return val
+    raise val
 
 
 # --------------------------------------------------------------------------- #
@@ -203,7 +234,10 @@ def resolve_lyrics(
 
     if vocals_path and Path(vocals_path).exists():
         try:
-            lyrics = transcribe_vocals_fallback(vocals_path)
+            # Timeout borné : évite qu'un blocage du modèle (téléchargement ou
+            # inférence infinie) ne fige le pipeline.
+            lyrics = _run_with_timeout(
+                transcribe_vocals_fallback, TRANSCRIBE_TIMEOUT, vocals_path)
             _write_json(output_json, lyrics)
             return lyrics, "whisper"
         except Exception as exc:
