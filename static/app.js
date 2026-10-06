@@ -19,7 +19,13 @@ const fmtTime = (t) => {
 const API = {
   async json(url, opts) {
     const r = await fetch(url, opts);
-    if (!r.ok) throw new Error((await r.text().catch(() => '')) || r.statusText);
+    if (!r.ok) {
+      const e = new Error((await r.text().catch(() => '')) || r.statusText);
+      // Porte le code HTTP : permet aux appelants (ex. suivi d'un morceau
+      // supprimé → 404) de discriminer la cause avant de choisir la réaction.
+      e.status = r.status;
+      throw e;
+    }
     return r.json();
   },
   health:   () => API.json('/api/health'),
@@ -28,6 +34,7 @@ const API = {
   status:   (id) => API.json(`/api/status/${id}`),
   remove:   (id) => API.json(`/api/tracks/${id}`, { method: 'DELETE' }),
   process:  (body) => API.json('/api/process', { method: 'POST', body }),
+  activeJobs: () => API.json('/api/jobs/active'),
 };
 
 /* ------------------------------- accords ---------------------------------- */
@@ -895,7 +902,7 @@ function buildPlayer(track) {
     const entries = Object.entries(sections).sort((a, b) => (+a[0]) - (+b[0]));
     nav.innerHTML = entries.map(([m, tag]) => {
       const style = getSectionStyle(tag);
-      return `<button class="section-pill ${style.cls}" data-m="${m}">${style.icon} ${tag} (m.${m})</button>`;
+      return `<button class="section-pill ${style.cls}" data-m="${m}">${style.icon} ${esc(tag)} (m.${m})</button>`;
     }).join('');
     nav.querySelectorAll('.section-pill').forEach(btn => {
       btn.onclick = () => {
@@ -1358,6 +1365,9 @@ function monitorJob(id, autoOpen = true) {
   const panel = $('#job-panel');
   panel.classList.remove('hidden');
   $('#job-logs').innerHTML = ''; // Remet le terminal à zéro
+  // Mémorise le job en cours : permet de reprendre son suivi après un
+  // rechargement de page ou une reconnexion (voir init()).
+  localStorage.setItem('guitarlab_active_job', id);
   jobRender({ id, status: 'queued', progress: 0, logs: ['En attente du backend…'] }, true);
 
   let usingWs = false;
@@ -1365,6 +1375,9 @@ function monitorJob(id, autoOpen = true) {
   const finish = (st) => {
     if (finished) return;
     finished = true;
+    // Le traitement est terminé : plus besoin de le reprendre à la prochaine
+    // ouverture, on nettoie l'identifiant mémorisé.
+    localStorage.removeItem('guitarlab_active_job');
     setTimeout(() => {
       refreshLibrary();
       if (autoOpen && st === 'ready') openPlayer(id).catch(() => {});
@@ -1374,8 +1387,16 @@ function monitorJob(id, autoOpen = true) {
 
   const iv = setInterval(async () => {
     if (usingWs || finished) return;
-    try { const s = await API.status(id); if (s && s.status !== 'unknown') jobRender(s); if (s && (s.status === 'ready' || s.status === 'error')) finish(s.status); }
-    catch (_) { /* backend pas encore joignable */ }
+    try {
+      const s = await API.status(id);
+      if (s && s.status !== 'unknown') jobRender(s);
+      if (s && (s.status === 'ready' || s.status === 'error')) finish(s.status);
+    } catch (e) {
+      // 404 : le morceau n'existe plus (supprimé entre-temps) → on stoppe le
+      // suivi et on nettoie `guitarlab_active_job` via `finish('error')`.
+      if (e && e.status === 404) finish('error');
+      // sinon (backend pas encore joignable) : on réessaiera au tick suivant.
+    }
   }, 1600);
 
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -1517,6 +1538,25 @@ async function init() {
       submit.disabled = false;
     }
   });
+
+  // Reprise automatique d'un décorticage en cours : après un rechargement de
+  // page ou une reconnexion, on ré-ouvre le terminal et on reprend le suivi
+  // (via l'API à défaut, sinon via l'identifiant mémorisé dans localStorage).
+  try {
+    const actives = await API.activeJobs();
+    const resumeId = (actives && actives.length) ? actives[0].id
+      : localStorage.getItem('guitarlab_active_job');
+    if (resumeId) {
+      localStorage.setItem('guitarlab_active_job', resumeId);
+      monitorJob(resumeId, false); // autoOpen=false : pas d'ouverture du lecteur
+    } else {
+      localStorage.removeItem('guitarlab_active_job');
+    }
+  } catch (_) {
+    // Backend injoignable : on se replie sur l'identifiant mémorisé.
+    const resumeId = localStorage.getItem('guitarlab_active_job');
+    if (resumeId) monitorJob(resumeId, false);
+  }
 
   await refreshLibrary();
   tick();

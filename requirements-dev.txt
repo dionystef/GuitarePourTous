@@ -1,0 +1,8 @@
+# Dépendances de développement pour exécuter la suite de tests (UNIQUEMENT).
+# Installer dans l'environnement d'exécution de `main.py` :
+#   pip install -r requirements-dev.txt
+#
+# `pytest-asyncio` n'est PAS requis : les tests d'intégration pilotent
+# `asyncio.run(...)` directement (aucun mark asyncio).
+pytest>=8.0
+pytest-cov>=5.0

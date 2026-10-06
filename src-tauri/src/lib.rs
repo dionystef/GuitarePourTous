@@ -24,7 +24,17 @@ const BACKEND_PORT: u16 = 8005;
 const HEALTH_PATH: &str = "/api/health";
 const HEALTHCHECK_TIMEOUT_SECS: u64 = 180;
 const OFFLINE_PAGE: &str = "offline.html";
-const PROJECT_ROOT: &str = "/home/steph/projet/GuitarePourTous";
+
+/// Racine du dépôt, résolue dynamiquement depuis le répertoire de compilation
+/// (`src-tauri` → parent). Portable : ne dépend plus d'un chemin absolu figé
+/// sur la machine de dev. En production ce chemin de dev n'existe pas, mais il
+/// ne sert que de dernier recours (les ressources embarquées sont trouvées avant).
+fn project_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."))
+}
 
 /// Nom du binaire moteur selon la plateforme.
 #[cfg(target_os = "windows")]
@@ -110,7 +120,7 @@ fn find_engine(app: &tauri::AppHandle) -> Option<PathBuf> {
         }
     }
     // 4) Dépôt de développement.
-    candidates.push(PathBuf::from(PROJECT_ROOT)
+    candidates.push(project_root()
         .join("src-tauri").join("resources").join("engine").join(ENGINE_NAME));
 
     candidates.into_iter().find(|p| p.is_file())
@@ -138,7 +148,7 @@ fn find_ffmpeg_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
             }
         }
     }
-    candidates.push(PathBuf::from(PROJECT_ROOT)
+    candidates.push(project_root()
         .join("src-tauri").join("resources").join("bin"));
 
     candidates
@@ -403,7 +413,8 @@ pub fn run() {
             .title("Guitar Lab — Studio IA")
             .inner_size(1280.0, 820.0)
             .min_inner_size(960.0, 600.0)
-            .devtools(true)
+            // DevTools uniquement en build debug (pas dans les builds de release).
+            .devtools(cfg!(debug_assertions))
             .build()?;
 
             // Lance le moteur autonome (sans bloquer, sans paniquer) en

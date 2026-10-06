@@ -24,6 +24,7 @@ import logging
 import os
 import re
 import sys
+import threading
 import unicodedata
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -40,8 +41,10 @@ from pydantic import BaseModel
 
 from services.chord_analyzer import analyze as analyze_harmony
 from services.downloader import (fetch_youtube_title, ingest_upload,
-                                 ingest_youtube)
-from services.library import delete_track as delete_library_track
+                                 ingest_youtube, is_supported_audio,
+                                 is_supported_audio_by_ext,
+                                 validate_youtube_url)
+from services.library import _safe_track_id, delete_track as delete_library_track
 from services.lyrics_provider import resolve_lyrics
 from services.separator import separate_stems
 from services.solo_transcriber import transcribe_solo
@@ -65,6 +68,12 @@ _default_data = (Path.home() / ".local" / "share" / "guitarlab" / "data"
 DATA_DIR = Path(os.environ.get("DATA_DIR", _default_data))
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", HERE / "static"))
 MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "500")) * 1024 * 1024
+CHUNK_UPLOAD = 1024 * 1024  # lecture du corps d'upload par tranches de 1 Mo
+# Garde-fou sur la durée totale d'une tâche (Demucs/whisper peuvent être longs) :
+# évite qu'un thread bloqué ne reste orphelin indéfiniment.
+JOB_TIMEOUT = int(os.environ.get("JOB_TIMEOUT_SECS", "3600"))
+# Limite de taille de frame WebSocket (l'app n'envoie que des « ping »).
+WS_MAX_SIZE = int(os.environ.get("WS_MAX_SIZE", str(4 * 1024 * 1024)))
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -127,44 +136,127 @@ logger.info("⚡ Device de calcul : %s", DEVICE)
 # Orchestrateur du pipeline (thread de fond + diffusion en direct)
 # --------------------------------------------------------------------------- #
 class JobManager:
+    """Orchestrateur du pipeline.
+
+    ``jobs`` est lu/écrit depuis la boucle asyncio (endpoints) ET depuis les
+    threads ``to_thread`` (pipeline) : un verrou protège donc chaque accès
+    pour éviter les courses. ``tasks`` est, lui, exclusivement manipulé sur la
+    boucle (annulation DELETE/shutdown).
+    """
+
     def __init__(self) -> None:
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.listeners: dict[str, set[WebSocket]] = {}
         self.jobs: dict[str, dict] = {}
+        self.tasks: dict[str, asyncio.Task] = {}
+        self._lock = threading.Lock()
+        # Identifiants dont le traitement a été annulé (DELETE / timeout).
+        # Le thread ``to_thread`` n'étant pas interrompable, ce drapeau lui
+        # permet de s'auto-supprimer plutôt que de ré-écrire des artefacts.
+        self._cancelled: set[str] = set()
 
     def bind(self, loop: asyncio.AbstractEventLoop) -> None:
         self.loop = loop
 
     # --- statut ---------------------------------------------------------
-    def _status_obj(self, track_id: str) -> dict:
-        found = self.jobs.get(track_id)
-        if found is not None:
-            return found
+    def _load_job_locked(self, track_id: str) -> dict:
+        """Retourne l'état du job (mémoire ou disque). À appeler verrou tenu."""
+        st = self.jobs.get(track_id)
+        if st is not None:
+            return st
         disk = DATA_DIR / track_id / "status.json"
         if disk.exists():
             try:
                 return json.loads(disk.read_text("utf-8"))
             except Exception:
                 pass
+        # Repli : un `metadata.json` présent atteste que le morceau existe (au
+        # moins finalisé/relancé après redémarrage). On en dérive l'état au lieu
+        # d'inventer un « queued » en dur, ce qui évite de mentir sur le statut.
+        meta = DATA_DIR / track_id / "metadata.json"
+        if meta.exists():
+            try:
+                m = json.loads(meta.read_text("utf-8"))
+                return {
+                    "id": track_id,
+                    "status": m.get("status", "unknown"),
+                    "progress": 100 if m.get("status") == "ready" else 0,
+                    "logs": [],
+                }
+            except Exception:
+                pass
         return {"id": track_id, "status": "queued", "progress": 0, "logs": []}
 
     def snapshot(self, track_id: str) -> dict:
-        return dict(self._status_obj(track_id))
+        with self._lock:
+            return dict(self._load_job_locked(track_id))
+
+    def snapshot_known(self, track_id: str) -> Optional[dict]:
+        """Retourne l'état du morceau s'il est *connu*, sinon ``None``.
+
+        Le contrôle de connaissance et la lecture de l'état sont effectués sous
+        un unique verrou (atomicité). Un morceau est « connu » s'il est présent
+        dans ``jobs``, ou si un ``status.json`` ou un ``metadata.json`` existe
+        sur le disque. Ainsi, un identifiant inconnu ou déjà supprimé ne renvoie
+        jamais l'état par défaut « queued » (qui masquerait la suppression).
+        """
+        with self._lock:
+            known = (
+                track_id in self.jobs
+                or (DATA_DIR / track_id / "status.json").exists()
+                or (DATA_DIR / track_id / "metadata.json").exists()
+            )
+            if not known:
+                return None
+            st = self._load_job_locked(track_id)
+            # TOCTOU : un DELETE concurrent (rmtree sans `_lock`) peut retirer les
+            # artefacts entre le contrôle « connu » et la lecture. `_load_job_locked`
+            # retombe alors sur le défaut « queued » qui masquerait la suppression.
+            if (
+                st.get("status") == "queued"
+                and track_id not in self.jobs
+                and not (DATA_DIR / track_id / "status.json").exists()
+                and not (DATA_DIR / track_id / "metadata.json").exists()
+            ):
+                return None
+            return dict(st)
+
+    def active_jobs(self) -> list[dict]:
+        """Retourne les décortications actives (statut ``queued`` ou ``processing``).
+
+        Permet au frontend de reprendre automatiquement le suivi d'un job après
+        un rechargement de page ou une reconnexion. La lecture est protégée par
+        ``self._lock`` : ``jobs`` est mis à jour depuis la boucle asyncio ET les
+        threads ``to_thread``.
+        """
+        with self._lock:
+            return [
+                dict(st)
+                for track_id, st in self.jobs.items()
+                if st.get("status") in ("queued", "processing")
+            ]
 
     def log(self, track_id: str, message: str, progress: float,
             status: str = "processing") -> None:
-        st = self._status_obj(track_id)
-        st["status"] = status
-        st["progress"] = int(round(progress))
-        st.setdefault("logs", []).append(str(message))
-        st["logs"] = st["logs"][-250:]
-        self.jobs[track_id] = st
+        with self._lock:
+            # Un morceau annulé ne doit plus écrire son état (mémoire + disque) :
+            # le thread ``to_thread`` continuerait sinon à recréer les artefacts
+            # après le DELETE, malgré l'annulation de la coroutine.
+            if track_id in self._cancelled:
+                return
+            st = self._load_job_locked(track_id)
+            st["status"] = status
+            st["progress"] = int(round(progress))
+            st.setdefault("logs", []).append(str(message))
+            st["logs"] = st["logs"][-250:]
+            self.jobs[track_id] = st
+            snap = dict(st)
         try:
             (DATA_DIR / track_id / "status.json").write_text(
-                json.dumps(st, ensure_ascii=False), encoding="utf-8")
+                json.dumps(snap, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass
-        self.emit(track_id, {"type": "status", "status": self.snapshot(track_id)})
+        self.emit(track_id, {"type": "status", "status": snap})
 
     # --- websockets ------------------------------------------------------
     def add_listener(self, track_id: str, ws: WebSocket) -> None:
@@ -187,19 +279,73 @@ class JobManager:
 
     # --- lancement --------------------------------------------------------
     def start(self, track_id: str, source: dict) -> None:
-        # Nouveau traitement : état et logs repartent de zéro.
-        self.jobs[track_id] = {"id": track_id, "status": "queued", "progress": 0, "logs": []}
+        # Nouveau traitement : état, logs et éventuel drapeau d'annulation
+        # résiduel repartent de zéro.
+        with self._lock:
+            self._cancelled.discard(track_id)
+            self.jobs[track_id] = {"id": track_id, "status": "queued", "progress": 0, "logs": []}
         self.log(track_id, "Tâche mise en file.", 1)
         loop = self.loop or asyncio.get_running_loop()
-        loop.create_task(self._job(track_id, source))
+        self.tasks[track_id] = loop.create_task(self._job(track_id, source))
+
+    def cancel_track(self, track_id: str) -> None:
+        """Annule la tâche asyncio associée à un morceau, si elle est en cours."""
+        with self._lock:
+            self._cancelled.add(track_id)
+        task = self.tasks.pop(track_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    def is_cancelled(self, track_id: str) -> bool:
+        """Indique si un traitement a été annulé (lecture côté thread pipeline)."""
+        with self._lock:
+            return track_id in self._cancelled
+
+    def remove_job(self, track_id: str) -> None:
+        """Purge l'état d'un morceau (mémoire + ``status.json`` disque).
+
+        Ne retire pas l'identifiant de ``_cancelled`` : le thread ``to_thread``
+        encore en cours doit rester « annulé » afin de ne pas recréer les
+        artefacts après suppression.
+        """
+        with self._lock:
+            self.jobs.pop(track_id, None)
+        try:
+            (DATA_DIR / track_id / "status.json").unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    async def shutdown(self) -> None:
+        """Annule proprement toutes les tâches en cours (arrêt du serveur)."""
+        pending = [t for t in self.tasks.values() if not t.done()]
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def _job(self, track_id: str, source: dict) -> None:
         try:
-            await asyncio.to_thread(self._pipeline, track_id, source)
+            await asyncio.wait_for(
+                asyncio.to_thread(self._pipeline, track_id, source),
+                timeout=JOB_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            logger.info("Tâche %s annulée", track_id)
+            # Ne pas ré-écrire l'état via self.log() : ce dernier relit
+            # status.json depuis le disque (fallback _load_job_locked) puis le
+            # ré-écrit, ce qui ressuscite le job en mémoire après le DELETE.
+            # On purge simplement l'état mémoire + disque du morceau annulé.
+            self.remove_job(track_id)
+            raise
+        except asyncio.TimeoutError:
+            logger.error("Tâche %s abandonnée (timeout %ss)", track_id, JOB_TIMEOUT)
+            self.log(track_id, "✖ Tâche abandonnée (délai dépassé).", 100, status="error")
         except Exception:  # noqa: BLE001 — défensif
             logger.exception("Tâche %s interrompue", track_id)
             self.log(track_id, "✖ Tâche interrompue (erreur inattendue).",
                      100, status="error")
+        finally:
+            self.tasks.pop(track_id, None)
 
     # --- pipeline -----------------------------------------------------------
     def _pipeline(self, track_id: str, source: dict) -> None:
@@ -260,6 +406,13 @@ class JobManager:
             #                    f"{midi_path.name} + {tab_path.name}", 96)
 
             # 5) FINALISATION
+            # Le thread ``to_thread`` n'est pas interrompable : si le morceau
+            # a été annulé pendant le traitement, on abandonne ici plutôt que
+            # d'écrire un `metadata.json` « prêt » sur un morceau supprimé.
+            if self.is_cancelled(track_id):
+                logger.info("Pipeline %s annulé en fin de traitement : "
+                            "finalisation abandonnée", track_id)
+                return
             files_dict = {
                 "wav": f"/data/{track_id}/source/audio.wav",
                 "mp3": f"/data/{track_id}/source/audio.mp3",
@@ -282,15 +435,20 @@ class JobManager:
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
             self._cleanup_original(track_dir)
             self.log(track_id, "✔ Terminé. Bonne répétition ! 🎸", 100, status="ready")
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 — détail technique journalisé côté serveur
             logger.exception("Pipeline en échec pour %s", track_id)
-            self.log(track_id, f"✖ Erreur : {exc}", 100, status="error")
+            # Message générique côté client : ne pas exposer `str(exc)` ni les
+            # chemins/source absolus (chemin local de l'upload, URL, …).
+            self.log(track_id, "✖ Échec du traitement.", 100, status="error")
+            # Un morceau annulé ne doit pas recréer de `metadata.json` d'erreur.
+            if self.is_cancelled(track_id):
+                return
             try:
                 (track_dir / "metadata.json").write_text(json.dumps({
                     "id": track_id,
                     "status": "error",
-                    "error": str(exc)[:600],
-                    "source": source,
+                    "error": "Erreur interne survenue pendant le traitement.",
+                    "source": source.get("type", "unknown"),
                     "created_at": datetime.now(timezone.utc).isoformat(),
                 }, ensure_ascii=False, indent=2), encoding="utf-8")
             except Exception:
@@ -397,9 +555,26 @@ async def lifespan(_app: FastAPI):
     mgr.bind(asyncio.get_running_loop())
     logger.info("Guitar Lab prêt — data=%s device=%s", DATA_DIR, DEVICE)
     yield
+    logger.info("Arrêt : annulation des tâches en cours…")
+    await mgr.shutdown()
 
 
 app = FastAPI(title="Guitar Lab", version="1.0.0", lifespan=lifespan)
+
+
+# CSP : autorise les inline scripts/styles (script d'init du thème + attributs
+# `style=`) présents dans les pages statiques, tout en gardant `default-src 'self'`.
+# `'unsafe-inline'` reste nécessaire pour ce frontend non-remodelé ; la protection
+# XSS principale est l'échappement côté client (`esc`) et la validation serveur.
+CSP = (
+    "default-src 'self'; "
+    "script-src 'self' 'unsafe-inline'; "
+    "style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: https://i.ytimg.com; "
+    "media-src 'self' blob:; "
+    "connect-src 'self' ws: wss:; "
+    "object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+)
 
 
 @app.middleware("http")
@@ -410,6 +585,10 @@ async def disable_static_cache_middleware(request: Request, call_next):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    # En-têtes de sécurité appliqués à toutes les réponses.
+    response.headers["Content-Security-Policy"] = CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
     return response
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -417,7 +596,7 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/data/{file_path:path}")
 async def serve_data_file(file_path: str, request: Request):
     path = (DATA_DIR / file_path).resolve()
-    if not path.is_file() or not str(path).startswith(str(DATA_DIR.resolve())):
+    if not path.is_file() or not path.is_relative_to(DATA_DIR.resolve()):
         raise HTTPException(404, "Fichier introuvable.")
     stat = path.stat()
     file_size = stat.st_size
@@ -481,7 +660,6 @@ def health():
         "status": "ok",
         "version": APP_VERSION,
         "device": DEVICE,
-        "data_dir": str(DATA_DIR),
     }
 
 
@@ -492,6 +670,8 @@ def tracks():
 
 @app.get("/api/tracks/{track_id}")
 def track_detail(track_id: str):
+    if not _safe_track_id(track_id):
+        raise HTTPException(404, "Morceau inconnu.")
     meta_path = DATA_DIR / track_id / "metadata.json"
     if not meta_path.exists():
         raise HTTPException(404, "Morceau inconnu.")
@@ -514,9 +694,12 @@ def track_detail(track_id: str):
 
 @app.delete("/api/tracks/{track_id}")
 def delete_track(track_id: str):
-    if not delete_library_track(track_id):
+    if not _safe_track_id(track_id) or not delete_library_track(track_id):
         raise HTTPException(404, "Morceau inconnu.")
-    mgr.jobs.pop(track_id, None)
+    # Annule la tâche asyncio en cours (le thread `to_thread` ne peut pas être
+    # interrompu, mais la boucle cesse de l'attendre et son état est purgé).
+    mgr.cancel_track(track_id)
+    mgr.remove_job(track_id)
     return {"ok": True, "id": track_id, "message": "Morceau supprimé."}
 
 
@@ -527,6 +710,8 @@ class StructureUpdate(BaseModel):
 
 @app.post("/api/tracks/{track_id}/structure")
 async def update_structure(track_id: str, request: Request):
+    if not _safe_track_id(track_id):
+        raise HTTPException(404, "Morceau introuvable.")
     meta_path = DATA_DIR / track_id / "metadata.json"
     if not meta_path.exists():
         raise HTTPException(404, "Morceau introuvable.")
@@ -534,17 +719,50 @@ async def update_structure(track_id: str, request: Request):
         body = await request.json()
         meta = json.loads(meta_path.read_text("utf-8"))
         if "line_breaks" in body:
-            meta["line_breaks"] = [int(x) for x in body["line_breaks"]]
+            # Les numéros de mesure sont des entiers positifs : on refuse toute
+            # valeur inattendue (au lieu de laisser une 500 opaque).
+            breaks = []
+            for x in body["line_breaks"]:
+                try:
+                    n = int(x)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "Saut de ligne invalide.")
+                if n < 0:
+                    raise HTTPException(400, "Saut de ligne invalide.")
+                breaks.append(n)
+            meta["line_breaks"] = breaks
         if "sections" in body:
-            meta["sections"] = {str(k): str(v) for k, v in body["sections"].items()}
+            sections = {}
+            for k, v in body["sections"].items():
+                try:
+                    measure = int(k)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "Étiquette de section invalide (numéro de mesure attendu).")
+                if measure <= 0:
+                    raise HTTPException(400, "Étiquette de section invalide (numéro de mesure attendu).")
+                label = str(v).strip()
+                if not label:
+                    raise HTTPException(400, "Étiquette de section vide.")
+                if len(label) > 80:
+                    raise HTTPException(400, "Étiquette de section trop longue.")
+                # Bloque caractères de contrôle (évite l'injection de métadonnées).
+                if any(ord(c) < 32 for c in label):
+                    raise HTTPException(400, "Étiquette de section invalide.")
+                sections[str(measure)] = label
+            meta["sections"] = sections
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"ok": True, "line_breaks": meta.get("line_breaks", []), "sections": meta.get("sections", {})}
-    except Exception as exc:
-        raise HTTPException(500, f"Erreur: {exc}")
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Mise à jour de la structure en échec pour %s", track_id)
+        raise HTTPException(500, "Erreur interne.")
 
 
 @app.post("/api/tracks/{track_id}/bar-offset")
 async def set_bar_offset(track_id: str, offset: int = Form(...)):
+    if not _safe_track_id(track_id):
+        raise HTTPException(404, "Morceau introuvable.")
     meta_path = DATA_DIR / track_id / "metadata.json"
     if not meta_path.exists():
         raise HTTPException(404, "Morceau introuvable.")
@@ -553,12 +771,15 @@ async def set_bar_offset(track_id: str, offset: int = Form(...)):
         meta["bar_offset"] = int(offset) % 4
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"ok": True, "bar_offset": meta["bar_offset"]}
-    except Exception as exc:
-        raise HTTPException(500, f"Erreur: {exc}")
+    except Exception:
+        logger.exception("Réglage du bar-offset en échec pour %s", track_id)
+        raise HTTPException(500, "Erreur interne.")
 
 
 @app.post("/api/tracks/{track_id}/structure-start")
 async def set_structure_start(track_id: str, measure: int = Form(...)):
+    if not _safe_track_id(track_id):
+        raise HTTPException(404, "Morceau introuvable.")
     meta_path = DATA_DIR / track_id / "metadata.json"
     if not meta_path.exists():
         raise HTTPException(404, "Morceau introuvable.")
@@ -567,8 +788,9 @@ async def set_structure_start(track_id: str, measure: int = Form(...)):
         meta["structure_start"] = int(measure)
         meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         return {"ok": True, "structure_start": meta["structure_start"]}
-    except Exception as exc:
-        raise HTTPException(500, f"Erreur: {exc}")
+    except Exception:
+        logger.exception("Réglage du structure-start en échec pour %s", track_id)
+        raise HTTPException(500, "Erreur interne.")
 
 
 @app.post("/api/process")
@@ -582,6 +804,14 @@ async def process(url: Optional[str] = Form(None),
     """
     if url and url.strip().startswith(("http://", "https://")):
         url = url.strip()
+        # SSRF : seules les URL YouTube (youtube.com / youtu.be + sous-domaines)
+        # sont acceptées ; les hôtes IP et résolutions privées sont rejetés.
+        if not validate_youtube_url(url):
+            raise HTTPException(
+                400,
+                "URL non autorisée : seules les URL YouTube "
+                "(youtube.com, youtu.be) sont acceptées.",
+            )
 
         # Déjà traité pour cette même URL ? → on rouvre l'existant.
         existing = _existing_by_source_url(url)
@@ -596,15 +826,34 @@ async def process(url: Optional[str] = Form(None),
         source = {"type": "youtube", "url": url}
     elif file and file.filename:
         safe_name = Path(file.filename).name or "audio.mp3"
+        # M7 : allowlist d'extensions avant toute écriture disque.
+        if not is_supported_audio_by_ext(safe_name):
+            raise HTTPException(415, "Format audio non supporté.")
         title = Path(safe_name).stem
         track_id = _track_id_for(title)
         raw = DATA_DIR / track_id / "source"
         raw.mkdir(parents=True, exist_ok=True)
-        contents = await file.read()
-        if len(contents) > MAX_UPLOAD:
-            raise HTTPException(413, "Fichier trop volumineux (500 Mo max).")
         dest = raw / safe_name
-        dest.write_bytes(contents)
+        # E4 : ne pas lire tout le corps en mémoire. On écrit par tranches avec
+        # un cap (MAX_UPLOAD + 1 octet) puis rejet 413 dès que le seuil est franchi.
+        try:
+            total = 0
+            with open(dest, "wb") as out:
+                while True:
+                    chunk = await file.read(CHUNK_UPLOAD)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_UPLOAD:
+                        raise HTTPException(413, "Fichier trop volumineux (500 Mo max).")
+                    out.write(chunk)
+        except HTTPException:
+            dest.unlink(missing_ok=True)
+            raise
+        # M7 : vérification du contenu (magic bytes) → 415 si non audio.
+        if not is_supported_audio(dest):
+            dest.unlink(missing_ok=True)
+            raise HTTPException(415, "Fichier audio invalide ou contenu non reconnu.")
         source = {"type": "upload", "filename": safe_name, "raw_path": dest}
     else:
         raise HTTPException(400, "Fournissez `url` (YouTube) ou `file` (audio).")
@@ -621,18 +870,49 @@ async def process(url: Optional[str] = Form(None),
 
 @app.get("/api/status/{track_id}")
 def status(track_id: str):
-    return mgr.snapshot(track_id)
+    if not _safe_track_id(track_id):
+        raise HTTPException(404, "Morceau inconnu.")
+    # MISSION-SEC-1 : le contrôle de connaissance et la lecture de l'état sont
+    # atomiques (un seul verrou via `snapshot_known`). Un morceau inconnu ou
+    # supprimé renvoie `None` → 404, sans jamais révéler d'état fantôme « queued ».
+    st = mgr.snapshot_known(track_id)
+    if st is None:
+        raise HTTPException(404, "Morceau inconnu.")
+    return st
+
+
+@app.get("/api/jobs/active")
+def active_jobs():
+    """Liste des décortications actives (statut ``queued`` ou ``processing``).
+
+    Consommé par le frontend pour reprendre automatiquement le suivi d'un
+    décorticage après un rechargement de page ou une reconnexion."""
+    return mgr.active_jobs()
 
 
 @app.websocket("/api/ws/{track_id}")
 async def ws_status(ws: WebSocket, track_id: str):
+    # M8 : valider l'identifiant avant tout accès disque (anti path traversal).
+    if not _safe_track_id(track_id):
+        await ws.close(code=1008)
+        return
+    # MISSION-SEC-1 (b) : même garde « connu » que l'endpoint HTTP /status,
+    # afin d'éviter toute divergence HTTP/WS (socket fermée pour un identifiant
+    # inconnu ou déjà supprimé, au lieu d'envoyer un état « queued » fantôme).
+    st = mgr.snapshot_known(track_id)
+    if st is None:
+        await ws.close(code=1008)
+        return
     await ws.accept()
     mgr.add_listener(track_id, ws)
     try:
-        await ws.send_json({"type": "status",
-                            "status": mgr.snapshot(track_id)})
+        await ws.send_json({"type": "status", "status": st})
         while True:
             msg = await ws.receive_text()
+            # Garde-fou : ne pas accepter de trames démesurées (ping attendu).
+            if len(msg) > 4096:
+                await ws.close(code=1009)
+                break
             if msg == "ping":
                 await ws.send_json({"type": "pong"})
     except WebSocketDisconnect:
@@ -642,8 +922,9 @@ async def ws_status(ws: WebSocket, track_id: str):
 
 
 if __name__ == "__main__":
-    host = os.environ.get("HOST", "0.0.0.0")
+    # E1 : par défaut, écoute uniquement sur le loopback (pas d'exposition réseau).
+    host = os.environ.get("HOST", "127.0.0.1")
     port = int(os.environ.get("PORT", "8000"))
     # On passe l'objet `app` (pas la chaîne "main:app") : indispensable pour
     # que uvicorn fonctionne dans le binaire PyInstaller.
-    uvicorn.run(app, host=host, port=port, reload=False)
+    uvicorn.run(app, host=host, port=port, reload=False, ws_max_size=WS_MAX_SIZE)
