@@ -546,6 +546,97 @@ input[type="range"].fader { width: 100%; }
   background: var(--accent);
 }
 
+/* ---------------------------- mastering & A/B ----------------------------- */
+.mastering-bar {
+  margin-top: 6px;
+  border: 1px dashed var(--border-2);
+  border-radius: 10px;
+  padding: 10px;
+  background: rgba(var(--accent-rgb), 0.04);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.mastering-row {
+  display: flex; align-items: center; gap: 8px;
+}
+.preset-select {
+  flex: 1; min-width: 0;
+  background: var(--bg-2); color: var(--text);
+  border: 1px solid var(--border-2); border-radius: 8px;
+  padding: 8px 10px; font-size: 12.5px; font-family: var(--sans);
+  cursor: pointer; outline: none;
+}
+.preset-select:focus { border-color: var(--accent); }
+.preset-select option { background: var(--panel); color: var(--text); }
+.btn-master {
+  flex: 0 0 auto;
+  padding: 8px 14px; font-size: 12.5px;
+}
+.btn-master.loading { opacity: .8; cursor: progress; }
+/* Spinner intégré au bouton pendant le mastering (pseudo-élément animé). */
+.btn-master.loading::after {
+  content: ''; display: inline-block; vertical-align: middle;
+  width: 12px; height: 12px; margin-left: 8px; border-radius: 50%;
+  border: 2px solid rgba(11, 14, 20, .35);
+  border-top-color: #0b0e14;
+  animation: spin-anim .8s linear infinite;
+}
+@keyframes spin-anim { to { transform: rotate(360deg); } }
+
+/* Comparateur A/B : toggle fort contraste avec badge actif + slider. */
+.ab-compare {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.ab-compare.hidden { display: none; }
+.ab-toggle {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  background: var(--bg-2); border: 1px solid var(--border-2);
+  border-radius: 999px; padding: 6px 10px; cursor: pointer;
+  transition: border-color .15s, box-shadow .15s;
+}
+.ab-toggle:hover { border-color: var(--accent); }
+.ab-toggle .ab-badge {
+  flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  font-family: var(--mono); font-weight: 800; font-size: 13px;
+  background: rgba(139, 123, 255, .2); color: var(--accent-2);
+  border: 1px solid rgba(139, 123, 255, .5);
+  transition: background .15s, color .15s;
+}
+.ab-toggle.mode-b .ab-badge {
+  background: var(--accent-grad); color: #0b0e14; border-color: transparent;
+}
+.ab-toggle .ab-labels {
+  flex: 1; display: flex; justify-content: space-between; min-width: 0;
+  font-size: 11.5px; color: var(--text-faint); font-weight: 600;
+}
+.ab-toggle .ab-lab { white-space: nowrap; }
+.ab-toggle .ab-lab.active { color: var(--accent-2); }
+.ab-toggle .track {
+  flex: 0 0 auto; position: relative; width: 34px; height: 18px;
+  border-radius: 999px; background: var(--border-2);
+  transition: background .15s;
+}
+.ab-toggle .track .thumb {
+  position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: var(--text-dim);
+  transition: transform .18s, background .18s;
+}
+.ab-toggle.mode-b .track { background: rgba(var(--accent-2-rgb), .5); }
+.ab-toggle.mode-b .track .thumb {
+  transform: translateX(16px); background: var(--accent-2);
+  box-shadow: 0 0 6px rgba(var(--accent-2-rgb), .8);
+}
+.btn-download {
+  padding: 8px 12px; font-size: 12px; white-space: nowrap;
+  text-decoration: none;
+}
+.mastering-hint {
+  margin: 0; font-size: 11px; color: var(--text-dim);
+  line-height: 1.35; min-height: 13px;
+}
+.mastering-hint.err { color: var(--red); }
+
 /* accord actuel + manche --------------------------------------------------- */
 /* Panneau central de visualisation */
 .chord-now {

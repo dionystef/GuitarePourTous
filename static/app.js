@@ -50,6 +50,15 @@ const API = {
   },
   deleteFolder: (name) =>
     API.json(`/api/folders/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  // Mastering : re-mix pondéré des stems + calibrage Matchering.
+  // `body` = { volumes: {stem: gain}, preset: 'standard'|'rock'|'acoustic' }.
+  masterTrack: (id, body) => API.json(`/api/tracks/${id}/master`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }),
+  // Presets de référence disponibles pour le mastering (liste ordonnée).
+  getMasterPresets: () => API.json('/api/mastering/presets'),
 };
 
 /* ------------------------------- accords ---------------------------------- */
@@ -243,6 +252,13 @@ class AudioEngine {
     this.duration = track.duration || 0;
     this.ctx = null;
     this.masterGain = null;
+    // Piste masterisée : { buffer, gain, src }. Reste synchronisée avec les
+    // stems (même spawn / stop) ; on ne bascule que les gains pour un A/B
+    // instantané et sans coupure.
+    this.masterTrack = null;
+    this.masterLoaded = false;
+    // Mode de comparaison A/B : 'A' (mix brut selon faders) / 'B' (masterisé).
+    this.abMode = 'A';
     this._startOffset = 0;    // temps média au début du segment courant
     this._startCtx = 0;       // ctx.currentTime au début du segment courant
     this._stopping = false;
@@ -270,18 +286,63 @@ class AudioEngine {
     if (ds.length) this.duration = Math.max(...ds);
     this.master = this.stems[0] || null;
     this.ready = true;
+    // Charge la piste masterisée si elle existe déjà (générée lors d'un passage
+    // précédent) : le comparateur A/B sera alors disponible dès l'ouverture.
+    if (this.track.files && this.track.files.master) {
+      await this._loadMaster(this.track.files.master);
+    }
     console.log("AudioEngine prêt");
     this.refreshMix();
     this.applyVolumes();
   }
 
-  async _decode(name) {
-    const res = await fetch(`/data/${this.track.id}/stems/${name}.mp3`);
+  // Décodage d'un flux audio depuis une URL quelconque (stem ou master) en
+  // buffer rejouable via Web Audio ; le gain retourné est routé vers le
+  // volume général `masterGain` (scaling commun à toutes les pistes).
+  async _decodeUrl(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Chargement audio impossible (${res.status}) : ${url}`);
     const arr = await res.arrayBuffer();
     const buffer = await this.ctx.decodeAudioData(arr);
     const gain = this.ctx.createGain();
     gain.connect(this.masterGain);
+    return { buffer, gain, src: null };
+  }
+
+  async _decode(name) {
+    const url = `/data/${this.track.id}/stems/${name}.mp3`;
+    const { buffer, gain } = await this._decodeUrl(url);
     return { name, buffer, gain, src: null };
+  }
+
+  // Charge la piste masterisée (mode B). Silencieux si le contexte n'est pas
+  // prêt ou si aucune URL n'est fournie. Met à jour `masterLoaded` ; le gain
+  // est piloté par `_applyGains` selon le mode A/B.
+  async _loadMaster(url) {
+    const masterUrl = url || (this.track.files && this.track.files.master);
+    if (!masterUrl || !this.ctx) return false;
+    try {
+      const loaded = await this._decodeUrl(masterUrl);
+      this.masterTrack = loaded;
+      this.masterLoaded = true;
+      this._applyGains();
+      return true;
+    } catch (err) {
+      console.error('chargement master', err);
+      this.masterTrack = null;
+      this.masterLoaded = false;
+      return false;
+    }
+  }
+
+  // Charge (ou recharge) la piste masterisée depuis une nouvelle URL, puis
+  // resynchronise la lecture si elle est active (spawn au point courant).
+  async loadMaster(url) {
+    this.track.files = this.track.files || {};
+    this.track.files.master = url;
+    const ok = await this._loadMaster(url);
+    if (ok && this.playing) this._spawn();
+    return ok;
   }
 
   _resume() { if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); }
@@ -316,6 +377,26 @@ class AudioEngine {
       };
       s.src = src;
     }
+    // La piste masterisée est toujours lancée en même temps que les stems, même
+    // en mode A (gain à 0) : le basculement A/B ne provoque ni rechargement ni
+    // désynchronisation, uniquement un changement de gains.
+    if (this.masterTrack) {
+      const m = this.masterTrack;
+      if (m.src) { try { m.src.stop(); } catch (_) { /* */ } }
+      const src = this.ctx.createBufferSource();
+      src.buffer = m.buffer;
+      src.playbackRate.value = this.speed;
+      try { src.preservesPitch = true; src.detune.value = 0; } catch (_) { /* non supporté */ }
+      src.connect(m.gain);
+      const offset = Math.max(0, Math.min(this._startOffset, m.buffer.duration - 0.001));
+      src.start(this._startCtx, offset);
+      src.onended = () => {
+        if (this._stopping || m.src !== src) return;
+        this.playing = false;
+        this._startOffset = this.duration;
+      };
+      m.src = src;
+    }
     this._stopping = false;
   }
 
@@ -342,6 +423,7 @@ class AudioEngine {
   setSpeed(v) {
     this.speed = v;
     for (const s of this.stems) if (s.src) s.src.playbackRate.value = v;
+    if (this.masterTrack && this.masterTrack.src) this.masterTrack.src.playbackRate.value = v;
   }
 
   setVolume(name, v) {
@@ -359,6 +441,9 @@ class AudioEngine {
   }
 
   _effectiveGain(name) {
+    // En mode B (masterisé), on mute tous les stems : seul le master est audible.
+    // On retrouve le mode A (mix brut) dès qu'aucun master n'est chargé.
+    if (this.abMode === 'B' && this.masterLoaded) return 0;
     if (this.masterMuted) return 0;
     if (this.muted.has(name)) return 0;
     if (this.solo && this.solo !== name) return 0;
@@ -383,6 +468,21 @@ class AudioEngine {
     for (const s of this.stems) {
       s.gain.gain.setTargetAtTime(this._effectiveGain(s.name), this.ctx.currentTime, 0.012);
     }
+    // En mode B le master joue à l'unité (le volume général est appliqué en aval
+    // par `masterGain`) ; en mode A il reste silencieux mais synchronisé.
+    if (this.masterTrack) {
+      const active = (this.abMode === 'B' && this.masterLoaded && !this.masterMuted) ? 1.0 : 0;
+      this.masterTrack.gain.gain.setTargetAtTime(active, this.ctx.currentTime, 0.012);
+    }
+  }
+
+  // Bascule le mode de comparaison A/B. 'A' = mix brut (faders), 'B' = master.
+  // Le changement est instantané : seuls les gains sont modifiés, jamais les
+  // sources audio (aucune coupure ni resynchronisation).
+  setABMode(mode) {
+    this.abMode = (mode === 'B') ? 'B' : 'A';
+    this._applyGains();
+    return this.abMode;
   }
 
   setLoopA(t) { this.loop.a = clamp(t, 0, this.duration); this._enableLoop(); }
@@ -394,6 +494,10 @@ class AudioEngine {
   _stopSources() {
     this._stopping = true;
     for (const s of this.stems) { if (s.src) { try { s.src.stop(); } catch (_) {} } s.src = null; }
+    if (this.masterTrack) {
+      if (this.masterTrack.src) { try { this.masterTrack.src.stop(); } catch (_) { /* */ } }
+      this.masterTrack.src = null;
+    }
     this._stopping = false;
   }
 
@@ -402,6 +506,8 @@ class AudioEngine {
     this.playing = false;
     if (this.ctx) { try { this.ctx.close(); } catch (_) { /* */ } }
     this.stems = [];
+    this.masterTrack = null;
+    this.masterLoaded = false;
     this.ctx = null;
     this.ready = false;
   }
@@ -800,6 +906,30 @@ function buildPlayer(track) {
             <input type="range" class="fader" id="fd-master" min="0" max="100" value="100" title="Volume général du morceau" />
             <button class="ms mute" id="ms-mute-master" title="Couper tout le son">M</button>
           </div>
+          <!-- Barre de mastering : preset + génération + comparateur A/B -->
+          <div class="mastering-bar" id="mastering-bar">
+            <div class="mastering-row">
+              <select class="preset-select" id="preset-select" title="Preset de référence pour le mastering"
+                aria-label="Preset de mastering"></select>
+              <button class="btn primary btn-master" id="btn-master" title="Masteriser le mix actuel (stems + faders)">
+                <span class="btn-ico">✨</span> Masteriser
+              </button>
+            </div>
+            <div class="ab-compare hidden" id="ab-compare" title="Comparer le mix brut et le master">
+              <button class="ab-toggle" id="ab-toggle" type="button"
+                aria-pressed="false" aria-label="Basculer entre mix brut et master">
+                <span class="ab-badge" id="ab-badge">A</span>
+                <span class="ab-labels">
+                  <span class="ab-lab" id="ab-label-a">Mix brut</span>
+                  <span class="ab-lab" id="ab-label-b">Master</span>
+                </span>
+                <span class="track" aria-hidden="true"><span class="thumb" id="ab-thumb"></span></span>
+              </button>
+              <a class="btn ghost btn-download" id="btn-download-master" href="#" download="master.wav"
+                title="Télécharger le master">⬇ Télécharger le Master</a>
+            </div>
+            <p class="mastering-hint" id="mastering-hint"></p>
+          </div>
         </div>
       </aside>
       <!-- Accordéon 2 : Accords & Paroles -->
@@ -1096,6 +1226,108 @@ function buildPlayer(track) {
     $('.master-ch').classList.toggle('muted', isMuted);
   });
 
+  /* ------------- Mastering & comparateur A/B ------------- */
+  const presetSelect = $('#preset-select');
+  const btnMaster = $('#btn-master');
+  const abCompare = $('#ab-compare');
+  const abToggle = $('#ab-toggle');
+  const abBadge = $('#ab-badge');
+  const masteringHint = $('#mastering-hint');
+  const dlMaster = $('#btn-download-master');
+
+  // Mise à jour visuelle du badge A/B et des libellés actifs (fort contraste).
+  function setABModeUI(mode) {
+    const isB = mode === 'B';
+    if (abBadge) abBadge.textContent = isB ? 'B' : 'A';
+    if (abToggle) {
+      abToggle.classList.toggle('mode-b', isB);
+      abToggle.classList.toggle('mode-a', !isB);
+      abToggle.setAttribute('aria-pressed', String(isB));
+    }
+    const la = $('#ab-label-a'), lb = $('#ab-label-b');
+    if (la) la.classList.toggle('active', !isB);
+    if (lb) lb.classList.toggle('active', isB);
+  }
+
+  // Applique le mode A/B sur le moteur audio (instantané, sans coupure).
+  function toggleAB() {
+    const next = (engine.abMode === 'B') ? 'A' : 'B';
+    engine.setABMode(next);
+    setABModeUI(next);
+  }
+  if (abToggle) abToggle.addEventListener('click', toggleAB);
+
+  // Rassemble les gains courants des faders de stems (état du mix).
+  function collectStemVolumes() {
+    const volumes = {};
+    (track.stems || []).forEach(name => {
+      const fd = $(`#fd-${name}`);
+      const v = fd ? parseFloat(fd.value) : 100;
+      volumes[name] = clamp(v / 100, 0, 1.5);
+    });
+    return volumes;
+  }
+
+  // Révèle le comparateur A/B (et le bouton téléchargement) une fois un master
+  // disponible, puis bascule en mode B (master) comme demandé.
+  function revealMaster(url) {
+    if (abCompare) abCompare.classList.remove('hidden');
+    if (dlMaster && url) { dlMaster.href = url; }
+    engine.setABMode('B');
+    setABModeUI('B');
+  }
+
+  // Peuple le sélecteur de presets (repli sur la liste canonique si l'API
+  // est indisponible, afin que l'interface reste utilisable hors-ligne).
+  function populatePresets(list) {
+    const presets = Array.isArray(list) && list.length
+      ? list
+      : ['standard', 'rock', 'acoustic'];
+    if (!presetSelect) return;
+    presetSelect.innerHTML = presets.map(p => {
+      const label = p.charAt(0).toUpperCase() + p.slice(1);
+      return `<option value="${esc(p)}">${esc(label)}</option>`;
+    }).join('');
+    if (presetSelect.value === '') presetSelect.value = presets[0];
+  }
+  API.getMasterPresets()
+    .then(r => populatePresets(r && r.presets))
+    .catch(() => populatePresets(null));
+
+  btnMaster?.addEventListener('click', async () => {
+    if (btnMaster.disabled) return;
+    const preset = presetSelect ? presetSelect.value : 'standard';
+    const volumes = collectStemVolumes();
+
+    btnMaster.disabled = true;
+    btnMaster.classList.add('loading');
+    if (masteringHint) masteringHint.textContent = 'Mastering en cours (~15s)…';
+    try {
+      // Le mastering s'appuie sur les balances actuelles des stems + preset.
+      const res = await API.masterTrack(track.id, { volumes, preset });
+      const url = (res && res.master_url) || (track.files && track.files.master);
+      if (!url) throw new Error('Réponse de mastering sans URL.');
+      const ok = await engine.loadMaster(url);
+      if (masteringHint) {
+        // `ok` signale si le master est rejouable localement (Web Audio) ; sinon
+        // le fichier existe mais la bascule A/B restera muette (dégradé gracieux).
+        masteringHint.textContent = ok
+          ? 'Master prêt — comparaison A/B disponible.'
+          : 'Master généré (lecture locale indisponible).';
+        masteringHint.classList.remove('err');
+      }
+      revealMaster(url);
+    } catch (err) {
+      if (masteringHint) {
+        masteringHint.textContent = 'Échec du mastering : ' + (err.message || 'erreur serveur.');
+        masteringHint.classList.add('err');
+      }
+    } finally {
+      btnMaster.disabled = false;
+      btnMaster.classList.remove('loading');
+    }
+  });
+
   // grille
   populateGrid(chords);
   const grid = $('#grid');
@@ -1260,6 +1492,15 @@ function buildPlayer(track) {
     $('#btn-play').disabled = false;
     $('#btn-stop').disabled = false;
     $('#t-tot').textContent = fmtTime(engine.duration);
+    // Un master généré précédemment est déjà chargé : on active le comparateur
+    // et on reste en mode A (mix brut) pour laisser l'utilisateur comparer.
+    if (engine.masterLoaded && abCompare) {
+      abCompare.classList.remove('hidden');
+      if (dlMaster && engine.track.files && engine.track.files.master) {
+        dlMaster.href = engine.track.files.master;
+      }
+      setABModeUI(engine.abMode);
+    }
   });
   $('#btn-play').disabled = true; $('#btn-stop').disabled = true;
 
