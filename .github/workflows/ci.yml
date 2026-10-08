@@ -27,3 +27,190 @@ jobs:
 
       - name: Exécuter les tests JS
         run: node tests/js/resume.test.js
+
+  deploy:
+    needs: test
+    runs-on: self-hosted
+    environment: production
+    if: github.ref == 'refs/heads/master' && github.event_name != 'pull_request'
+
+    steps:
+      # --------------------------------------------------------------------- #
+      # Le déploiement repose exclusivement sur des secrets GitHub Actions
+      # (jamais de valeur en clair dans le dépôt) :
+      #   DEPLOY_HOST                — adresse de l'hôte cible
+      #   DEPLOY_USER                — utilisateur NON ROOT autorisé à déployer
+      #   DEPLOY_SSH_PRIVATE_KEY     — clé privée SSH (éd25519) de cet utilisateur
+      #   DEPLOY_HOST_KEY_FINGERPRINT— empreinte SHA256 attendue de la clé
+      #                                publique de l'hôte (épinglage anti-MITM)
+      #   DEPLOY_REPO_URL            — URL git du dépôt (token inclus si privé)
+      # --------------------------------------------------------------------- #
+      - name: Vérifier la présence des secrets de déploiement
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST_KEY_FINGERPRINT: ${{ secrets.DEPLOY_HOST_KEY_FINGERPRINT }}
+          DEPLOY_REPO_URL: ${{ secrets.DEPLOY_REPO_URL }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?Secret manquant : DEPLOY_HOST}"
+          : "${DEPLOY_USER:?Secret manquant : DEPLOY_USER}"
+          : "${DEPLOY_SSH_PRIVATE_KEY:?Secret manquant : DEPLOY_SSH_PRIVATE_KEY}"
+          : "${DEPLOY_HOST_KEY_FINGERPRINT:?Secret manquant : DEPLOY_HOST_KEY_FINGERPRINT}"
+          : "${DEPLOY_REPO_URL:?Secret manquant : DEPLOY_REPO_URL}"
+
+      - name: Déployer de manière atomique (release par symlink + rollback)
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.DEPLOY_SSH_PRIVATE_KEY }}
+          DEPLOY_HOST_KEY_FINGERPRINT: ${{ secrets.DEPLOY_HOST_KEY_FINGERPRINT }}
+          DEPLOY_REPO_URL: ${{ secrets.DEPLOY_REPO_URL }}
+          # Délai maximal (s) du polling de santé avant rollback. Configurable
+          # via une variable de dépôt/org (défaut 300s) : un démarrage très
+          # long (torch/demucs) ne déclenche pas de faux rollback.
+          DEPLOY_HEALTH_TIMEOUT_SECS: ${{ vars.DEPLOY_HEALTH_TIMEOUT_SECS || '300' }}
+        run: |
+          set -euo pipefail
+
+          # --- Clé privée (mode 600, jamais dans le dépôt) ---------------
+          SSH_DIR="$HOME/.ssh"
+          KEY="$SSH_DIR/deploy_ed25519"
+          KNOWN="$SSH_DIR/known_hosts"
+          mkdir -p "$SSH_DIR"
+          chmod 700 "$SSH_DIR"
+          umask 077
+          printf '%s\n' "$DEPLOY_SSH_PRIVATE_KEY" > "$KEY"
+          chmod 600 "$KEY"
+
+          # --- Épinglage de la clé publique de l'hôte ---------------------
+          # On récupère la clé publiée par l'hôte puis on vérifie qu'elle
+          # correspond à l'empreinte SHA256 attendue (secret). Si l'hôte a
+          # changé de clé, le job échoue explicitement : aucun attaquant ne
+          # peut se faire passer pour l'hôte sans la clé attendue.
+          ssh-keyscan -H "$DEPLOY_HOST" > "$KNOWN" 2>/dev/null || true
+          FINGERPRINTS="$(ssh-keygen -lf "$KNOWN" 2>/dev/null | awk '{print $2}')"
+          if ! printf '%s\n' "$FINGERPRINTS" | grep -qx "$DEPLOY_HOST_KEY_FINGERPRINT"; then
+            echo "::error:: Clé hôte inattendue — fingerprint obtenu: ${FINGERPRINTS:-'(aucun)'}"
+            exit 1
+          fi
+          chmod 600 "$KNOWN"
+
+          # --- Transport du dépôt (insensible au quoting, pas dans `ps`) -----
+          # Encodage base64 : une URL contenant une apostrophe (ou tout autre
+          # caractère spécial) ne casse plus le quoting, et la valeur ne transite
+          # jamais sur la ligne de commande ssh (donc invisible dans `ps`). Elle
+          # est injectée en tête du heredoc envoyé par stdin, puis décodée côté
+          # distant.
+          REPO_URL_B64="$(printf '%s' "$DEPLOY_REPO_URL" | base64 -w0 2>/dev/null || printf '%s' "$DEPLOY_REPO_URL" | base64 | tr -d '\n')"
+
+          # --- Connexion SSH (non-root, clé hôte vérifiée) -----------------
+          # `StrictHostKeyChecking=yes` (jamais `no`) + `UserKnownHostsFile`
+          # pointant sur le known_hosts épinglé ci-dessus. Le heredoc est
+          # préfixé par la valeur base64 puis envoyé à `bash -s` via stdin.
+          {
+            printf "REPO_URL_B64='%s'\n" "$REPO_URL_B64"
+            printf "DEPLOY_HEALTH_TIMEOUT_SECS=%s\n" "${DEPLOY_HEALTH_TIMEOUT_SECS:-300}"
+            cat
+          } << 'REMOTE' | \
+            ssh -i "$KEY" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$KNOWN" \
+                "$DEPLOY_USER@$DEPLOY_HOST" bash -s
+            set -euo pipefail
+
+            # Décodage base64 portable : GNU/Linux (`base64 -d`), BSD/macOS
+            # (`-D` différente), avec repli sur `openssl base64 -d` (nécessite
+            # un saut de ligne). Cohérent avec l'encodage local déjà
+            # multiplateforme ; si aucun décodeur n'est disponible, le
+            # `set -e` fait échouer le déploiement (fail-closed).
+            _b64_decode() {
+              printf '%s' "$1" | base64 -d 2>/dev/null || \
+              printf '%s' "$1" | base64 -D 2>/dev/null || \
+              printf '%s\n' "$1" | openssl base64 -d 2>/dev/null
+            }
+
+            # Décodage du dépôt transporté via stdin (base64) ; repli sur
+            # l'environnement (utilisé par le harness de test qui fournit
+            # directement `DEPLOY_REPO_URL`).
+            if [ -n "${REPO_URL_B64:-}" ]; then
+              DEPLOY_REPO_URL="$(_b64_decode "$REPO_URL_B64")"
+            fi
+            : "${DEPLOY_REPO_URL:?DEPLOY_REPO_URL manquant}"
+            export DEPLOY_REPO_URL
+
+            # Délai de polling configurable (défaut 300s) : un démarrage très
+            # long ne déclenche pas de faux rollback. Division plafonnée + borne
+            # basse : un délai mal configuré (< 5s, ex. 1 ou 3) ne doit jamais
+            # produire zéro sondage (sinon faux rollback immédiat).
+            HEALTH_TIMEOUT_SECS="${DEPLOY_HEALTH_TIMEOUT_SECS:-300}"
+            HEALTH_ATTEMPTS=$(( (HEALTH_TIMEOUT_SECS + 4) / 5 ))
+            if [ "$HEALTH_ATTEMPTS" -lt 1 ]; then
+              HEALTH_ATTEMPTS=1
+            fi
+
+            APP_ROOT="$HOME/guitarlab"
+            RELEASES="$APP_ROOT/releases"
+            RELEASE="$RELEASES/$(date +%Y%m%d-%H%M%S)"
+            CURRENT="$APP_ROOT/current"
+
+            # La bibliothèque utilisateur vit hors des releases (persistante).
+            mkdir -p "$RELEASES" "$APP_ROOT/data"
+
+            # 1) Récupération atomique : clone neuf de la révision cible.
+            #    Aucun `reset --hard` : on ne touche jamais une release déjà
+            #    active, on en crée une nouvelle (rollback toujours possible).
+            git clone --depth 1 "$DEPLOY_REPO_URL" "$RELEASE"
+
+            # 2) La bibliothèque (data/) est partagée entre les releases.
+            #    Le `git clone` recrée `$RELEASE/data/` (via `data/.gitkeep`
+            #    suivi) : on supprime ce dossier avant de poser le symlink, sinon
+            #    `ln -sfn` créerait un symlink imbriqué `$RELEASE/data/data` et
+            #    docker compose monterait une bibliothèque vide (perte d'accès).
+            rm -rf "$RELEASE/data"
+            ln -sfn "$APP_ROOT/data" "$RELEASE/data"
+
+            # 3) Bascule atomique du symlink `current` (opération unique).
+            PREV="$(readlink -f "$CURRENT" 2>/dev/null || true)"
+            ln -sfn "$RELEASE" "$CURRENT"
+
+            # 4) Conteneurs relancés UNIQUEMENT après la bascule.
+            (cd "$CURRENT" && docker compose up -d --build)
+
+            # 5) Contrôle de santé : on ne déclare l'échec qu'en cas d'échec
+            #    prolongé. On réutilise d'abord l'état Docker (`healthy` /
+            #    `unhealthy`), qui respecte le `start_period` de 30s du
+            #    healthcheck Compose — aucun faux rollback sur un boot lent
+            #    (torch/demucs). Repli sur `/api/health` en cas d'absence de
+            #    healthcheck Docker. Délai maximum configurable.
+            HEALTH_OK=0
+            for _ in $(seq 1 "$HEALTH_ATTEMPTS"); do
+              STATE="$(docker inspect -f '{{.State.Health.Status}}' guitarlab 2>/dev/null || echo unknown)"
+              if [ "$STATE" = "healthy" ]; then
+                HEALTH_OK=1
+                break
+              fi
+              if [ "$STATE" = "unhealthy" ]; then
+                break
+              fi
+              if curl -fsS "http://127.0.0.1:8005/api/health" >/dev/null 2>&1; then
+                HEALTH_OK=1
+                break
+              fi
+              sleep 5
+            done
+            if [ "$HEALTH_OK" -ne 1 ]; then
+              echo "⚠ Healthcheck en échec après ~${HEALTH_TIMEOUT_SECS}s : rollback sur la release précédente."
+              if [ -n "$PREV" ] && [ -d "$PREV" ]; then
+                ln -sfn "$PREV" "$CURRENT"
+                (cd "$CURRENT" && docker compose up -d --build)
+              else
+                echo "Aucune release précédente : rollback impossible (premier déploiement)."
+              fi
+              exit 1
+            fi
+
+            # 6) Purge des anciennes releases : on conserve les 4 plus récentes
+            #    (release courante + 3 précédentes pour le rollback).
+            ls -1dt "$RELEASES"/* 2>/dev/null | tail -n +5 | xargs -r rm -rf
+          REMOTE

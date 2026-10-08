@@ -23,7 +23,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 import threading
 import unicodedata
 from contextlib import asynccontextmanager
@@ -46,6 +48,8 @@ from services.downloader import (fetch_youtube_title, ingest_upload,
                                  validate_youtube_url)
 from services.library import _safe_track_id, delete_track as delete_library_track
 from services.lyrics_provider import resolve_lyrics
+from services.mastering import (InvalidVolumeError, MasteringError,
+                                apply_mastering, get_presets, sum_stems)
 from services.separator import separate_stems
 from services.solo_transcriber import transcribe_solo
 
@@ -846,6 +850,18 @@ class TrackMetaUpdate(BaseModel):
     folder: Optional[str] = None
 
 
+class MasteringRequest(BaseModel):
+    """Demande de mastering : balances de volume par stem + preset de référence.
+
+    ``volumes`` mappe un nom de stem vers son gain multiplicatif ; un stem non
+    référence est mixé à l'unité. ``preset`` désigne la référence de calibrage
+    (``standard`` par défaut, ``rock`` / ``acoustic`` en variantes).
+    """
+
+    volumes: dict[str, float] = {}
+    preset: str = "standard"
+
+
 @app.patch("/api/tracks/{track_id}")
 async def update_track_meta(track_id: str, request: Request):
     """Met à jour ``title`` / ``artist`` / ``folder`` d'un morceau.
@@ -1040,6 +1056,155 @@ async def set_structure_start(track_id: str, measure: int = Form(...)):
     except Exception:
         logger.exception("Réglage du structure-start en échec pour %s", track_id)
         raise HTTPException(500, "Erreur interne.")
+
+
+# --------------------------------------------------------------------------- #
+# Mastering : sommation pondérée des stems + calibrage Matchering
+# --------------------------------------------------------------------------- #
+# Extensions audio acceptées comme stem. ``mix`` est volontairement exclu : il
+# s'agit de la piste source complète, alors que le mastering doit re-mixer les
+# stems individuels (vocals, drums, bass, guitar, …).
+_MASTER_STEM_EXTS = {".wav", ".mp3", ".flac", ".ogg"}
+
+
+def _collect_stem_paths(stems_dir: Path) -> dict[str, Path]:
+    """Énumère les stems audio exploitables dans ``stems_dir``.
+
+    Renvoie un mapping ``nom -> chemin`` en excluant la piste ``mix`` (source
+    complète) et le sous-dossier ``raw/``. L'ordre est stable (tri alphabétique)
+    pour un rendu déterministe.
+
+    Paramètres:
+        stems_dir: dossier ``data/<track_id>/stems``.
+
+    Returns:
+        dict[str, Path]: stems disponibles, prêts pour ``sum_stems``.
+    """
+    paths: dict[str, Path] = {}
+    for p in sorted(stems_dir.iterdir()):
+        if p.is_file() and p.suffix.lower() in _MASTER_STEM_EXTS:
+            name = p.stem
+            if name != "mix":
+                paths[name] = p
+    return paths
+
+
+def _update_master_metadata(track_id: str, output_wav: Path) -> None:
+    """Ajoute ``files.master`` au ``metadata.json`` du morceau (best-effort).
+
+    La mise à jour est atomique (tmp + replace) et n'échoue jamais l'endpoint :
+    un ``metadata.json`` absent ou corrompu laisse simplement le champ non écrit.
+
+    Paramètres:
+        track_id: identifiant du morceau.
+        output_wav: fichier master produit (utilisé pour le nom).
+    """
+    meta_path = DATA_DIR / track_id / "metadata.json"
+    if not meta_path.exists():
+        logger.debug("metadata.json absent pour %s : champ master non écrit", track_id)
+        return
+    try:
+        meta = json.loads(meta_path.read_text("utf-8"))
+    except Exception:
+        logger.warning("metadata.json illisible pour %s : mise à jour ignorée", track_id)
+        return
+    meta.setdefault("files", {})["master"] = f"/data/{track_id}/{output_wav.name}"
+    _write_metadata(meta_path, meta)
+    logger.info("metadata.json de %s mis à jour : files.master=%s",
+                track_id, f"/data/{track_id}/{output_wav.name}")
+
+
+def _run_mastering(stem_paths: dict[str, Path], volumes: dict[str, float],
+                   preset: str, mix_wav: Path, master_wav: Path) -> None:
+    """Exécute la sommation puis le mastering (appelé dans un thread).
+
+    Utilise un fichier intermédiaire dédié (``mix_wav``) pour ne pas risquer de
+    lire et d'écrire simultanément le même chemin ; l'intermédiaire est ensuite
+    supprimé en ``finally``, et le répertoire temporaire qui le contient est
+    purgé par l'appelant (voir ``master_track``).
+
+    Paramètres:
+        stem_paths: stems à mixer.
+        volumes: gains par stem (repli à 1.0 si omis).
+        preset: preset de référence.
+        mix_wav: chemin du mix intermédiaire (dans un répertoire temporaire).
+        master_wav: chemin du master final.
+    """
+    try:
+        sum_stems(stem_paths, volumes, mix_wav)
+        apply_mastering(mix_wav, preset, master_wav)
+    finally:
+        mix_wav.unlink(missing_ok=True)
+
+
+@app.get("/api/mastering/presets")
+def mastering_presets():
+    """Retourne la liste des presets de référence disponibles pour le mastering."""
+    return {"presets": get_presets()}
+
+
+@app.post("/api/tracks/{track_id}/master")
+async def master_track(track_id: str, request: MasteringRequest):
+    """Masterise un morceau à partir de ses stems et des balances fournies.
+
+    1. Valide ``_safe_track_id`` et la présence de stems dans ``stems/`` ;
+    2. somme les stems pondérés puis applique Matchering (thread non-bloquant
+       via ``asyncio.to_thread``) ; le mix intermédiaire est écrit dans un
+       répertoire temporaire (jamais exposé sous ``/data``) puis supprimé ;
+    3. écrit ``data/<track_id>/master.wav``, met à jour ``files.master`` dans
+       ``metadata.json`` et renvoie l'URL publique du master.
+
+    Sémantique des erreurs HTTP :
+      * ``400`` — erreur client (volume invalide fourni par l'appelant) ;
+      * ``404`` — identifiant inconnu / aucun stem disponible ;
+      * ``500`` — erreur technique ou d'état serveur (Matchering, référence,
+        échantillonnage incohérent, stem manquant, coupure invalide), avec
+        journalisation côté serveur.
+    """
+    if not _safe_track_id(track_id):
+        raise HTTPException(404, "Morceau inconnu.")
+
+    stems_dir = DATA_DIR / track_id / "stems"
+    if not stems_dir.is_dir():
+        raise HTTPException(404, "Aucun stem disponible pour ce morceau.")
+    stem_paths = _collect_stem_paths(stems_dir)
+    if not stem_paths:
+        raise HTTPException(404, "Aucun stem utilisable pour le mastering "
+                                 "du morceau.")
+
+    # Mix intermédiaire hors du dossier de données : un répertoire temporaire
+    # dédié évite tout résidu exposé via ``/data`` et toute concurrence entre
+    # deux masterings simultanés. Le répertoire est purgé en ``finally``.
+    master_wav = DATA_DIR / track_id / "master.wav"
+    tmp_master_dir = Path(tempfile.mkdtemp(prefix="guitarlab_master_"))
+    mix_wav = tmp_master_dir / "mix.wav"
+
+    try:
+        # La sommation + Matchering sont CPU-bound : on les délègue à un thread
+        # pour ne pas bloquer la boucle d'événements Uvicorn.
+        await asyncio.to_thread(
+            _run_mastering, stem_paths, request.volumes, request.preset,
+            mix_wav, master_wav,
+        )
+    except InvalidVolumeError as exc:
+        # Erreur d'entrée utilisateur : répond 400 sans la masquer.
+        logger.warning("Mastering refusé (entrée client invalide) pour %s : %s",
+                       track_id, exc)
+        raise HTTPException(400, str(exc))
+    except MasteringError as exc:
+        # Erreur technique / d'état serveur : on journalise, on ne divulgue pas
+        # le détail au client (message générique 500).
+        logger.error("Mastering en échec (état serveur) pour %s : %s",
+                     track_id, exc)
+        raise HTTPException(500, "Erreur interne pendant le mastering.")
+    except Exception:  # noqa: BLE001 — détail technique journalisé serveur
+        logger.exception("Mastering en échec pour %s", track_id)
+        raise HTTPException(500, "Erreur interne pendant le mastering.")
+    finally:
+        shutil.rmtree(tmp_master_dir, ignore_errors=True)
+
+    _update_master_metadata(track_id, master_wav)
+    return {"ok": True, "master_url": f"/data/{track_id}/master.wav"}
 
 
 @app.post("/api/process")
