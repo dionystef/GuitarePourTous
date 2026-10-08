@@ -18,6 +18,7 @@ jobs:
       - name: Exécuter les tests dans le conteneur local
         run: |
           docker run --rm --pull never \
+            --user $(id -u):$(id -g) \
             -v "$GITHUB_WORKSPACE:/app" \
             -w /app \
             guitare-ci:latest \
