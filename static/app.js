@@ -35,6 +35,21 @@ const API = {
   remove:   (id) => API.json(`/api/tracks/${id}`, { method: 'DELETE' }),
   process:  (body) => API.json('/api/process', { method: 'POST', body }),
   activeJobs: () => API.json('/api/jobs/active'),
+  // Métadonnées d'un morceau (titre / artiste / dossier) — PATCH au corps JSON.
+  updateTrackMeta: (id, data) => API.json(`/api/tracks/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  }),
+  // Dossiers virtuels de la bibliothèque.
+  getFolders:   () => API.json('/api/folders'),
+  createFolder: (name) => {
+    const fd = new FormData();
+    fd.append('name', name);
+    return API.json('/api/folders', { method: 'POST', body: fd });
+  },
+  deleteFolder: (name) =>
+    API.json(`/api/folders/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 };
 
 /* ------------------------------- accords ---------------------------------- */
@@ -464,7 +479,16 @@ class Metronome {
 }
 
 /* -------------------------------- vue joueur ------------------------------ */
-const App = { track: null, engine: null, metro: null };
+// Identifiants internes des onglets système (Tous / Non classés). On les
+// préfixe pour ne JAMAIS dépendre d'une égalité avec une chaîne utilisateur :
+// un dossier nommé « all » ou « unclassified » (hérité d'une ancienne version
+// ou créé hors API) ne doit pas collisionner avec la logique de filtre.
+const FOLDER_ALL = '__all__';
+const FOLDER_UNCLASSIFIED = '__none__';
+
+// `activeFolder` pilote le filtre de la bibliothèque : FOLDER_ALL (Tous),
+// FOLDER_UNCLASSIFIED (Non classés) ou un nom de dossier personnalisé.
+const App = { track: null, engine: null, metro: null, activeFolder: FOLDER_ALL, tracks: [], folders: [] };
 
 function showView(name) {
   $$('.view').forEach(v => v.classList.toggle('hidden', v.id !== `view-${name}`));
@@ -1273,57 +1297,245 @@ function showHome() {
 }
 
 async function refreshLibrary() {
-  const lib = $('#library');
-  const empty = $('#empty-lib');
+  // Charge les morceaux et les dossiers en parallèle, puis met en cache les
+  // réponses dans `App` : le filtrage par onglet et le calcul des compteurs
+  // rejouent sur les caches sans re-requêter le backend.
   let tracks = [];
   try { tracks = await API.tracks(); } catch (_) { /* backend indisponible */ }
-  $('#lib-count').textContent = `${tracks.length} morceau${tracks.length > 1 ? 'x' : ''}`;
-  empty.classList.toggle('hidden', tracks.length > 0);
+  let folders = [];
+  try { folders = await API.getFolders(); } catch (_) { /* backend indisponible */ }
+  App.tracks = Array.isArray(tracks) ? tracks : [];
+  App.folders = Array.isArray(folders) ? folders : [];
+  renderFolderTabs();
+  renderCards();
+}
 
-  lib.innerHTML = tracks.map(t => {
-    const chipCls = t.status === 'ready' ? 'ready' : (t.status === 'error' ? 'error' : 'queue');
-    const chipTxt = t.status === 'ready' ? 'Prêt' : (t.status === 'error' ? 'Erreur' : t.status);
-    const thumb = t.thumbnail
-      ? `style="background-image:url('${esc(t.thumbnail)}')"`
-      : '';
-    const meta = [t.artist, t.duration ? fmtTime(t.duration) : null, t.bpm ? `${t.bpm.toFixed(0)} BPM` : null]
-      .filter(Boolean).join(' · ');
-    return `
-      <article class="card" data-id="${esc(t.id)}" data-title="${esc(t.title)}">
-        <div class="thumb" ${thumb}>
-          ${t.thumbnail ? '' : '<span class="fallback">🎸</span>'}
-          <button class="card-del" title="Supprimer" aria-label="Supprimer ${esc(t.title)}">✕</button>
-          <span class="chip ${chipCls}">${chipTxt}</span>
-        </div>
-        <div class="card-body">
-          <h3>${esc(t.title)}</h3>
-          <div class="meta">${esc(meta)}</div>
-          <div class="fade">${esc((t.stems || []).length)} stems — ${esc(t.source || '')}</div>
-          <button class="btn primary">Ouvrir le labo</button>
-        </div>
-      </article>`;
-  }).join('');
+/* ------------------- onglets de dossiers + rendu des cartes ---------------- */
+function folderTabHTML(folder, label, count) {
+  const active = App.activeFolder === folder;
+  // Seuls les dossiers personnalisés (pas « Tous » / « Non classés ») sont
+  // supprimables d'un clic sur leur croix.
+  const del = (folder !== FOLDER_ALL && folder !== FOLDER_UNCLASSIFIED)
+    ? '<span class="folder-tab-del" title="Supprimer le dossier">×</span>' : '';
+  return `<button type="button" class="folder-tab${active ? ' active' : ''}" data-folder="${esc(folder)}">
+    <span class="folder-tab-label">${esc(label)}</span>
+    <span class="folder-tab-count">${count}</span>${del}
+  </button>`;
+}
 
-  lib.querySelectorAll('article.card').forEach(card => {
-    const btn = card.querySelector('.btn');
-    btn.addEventListener('click', async () => {
-      try { await openPlayer(card.dataset.id); }
-      catch (_) { alert('Impossible d’ouvrir ce morceau (traitement incomplet ?).'); }
+function renderFolderTabs() {
+  const tabsBar = $('#library-folders');
+  if (!tabsBar) return;
+  const tracks = App.tracks || [];
+  const counts = {};
+  let unclassified = 0;
+  tracks.forEach(t => {
+    const f = (t.folder || '').trim();
+    if (f) counts[f] = (counts[f] || 0) + 1;
+    else unclassified += 1;
+  });
+
+  const parts = [folderTabHTML(FOLDER_ALL, 'Tous', tracks.length)];
+  if (unclassified > 0) parts.push(folderTabHTML(FOLDER_UNCLASSIFIED, 'Non classés', unclassified));
+  (App.folders || []).forEach(name => parts.push(folderTabHTML(name, name, counts[name] || 0)));
+  parts.push('<button type="button" class="folder-add" id="btn-add-folder" title="Créer un nouveau dossier">＋ Dossier</button>');
+  tabsBar.innerHTML = parts.join('');
+
+  // Clic sur un onglet → change le filtre actif et re-rend les cartes.
+  tabsBar.querySelectorAll('.folder-tab').forEach(tab => {
+    tab.addEventListener('click', (ev) => {
+      // La croix de suppression est gérée à part, on ne change pas d'onglet.
+      if (ev.target.closest('.folder-tab-del')) return;
+      App.activeFolder = tab.dataset.folder;
+      renderFolderTabs();
+      renderCards();
     });
-    const del = card.querySelector('.card-del');
-    del.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const name = card.dataset.title || 'ce morceau';
-      if (!confirm(`Supprimer « ${name} » de la bibliothèque ?`)) return;
-      try {
-        await API.remove(card.dataset.id);
-        card.remove();
-        refreshLibrary();
-      } catch (_) {
-        alert('Suppression impossible (backend injoignable ?).');
+  });
+  // Suppression d'un dossier personnalisé.
+  tabsBar.querySelectorAll('.folder-tab-del').forEach(del => {
+    del.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      const tab = del.closest('.folder-tab');
+      const name = tab.dataset.folder;
+      if (!name) return;
+      if (confirm(`Supprimer le dossier « ${name} » ? Les morceaux passeront en « Non classés ».`)) {
+        deleteFolderAndRefresh(name);
       }
     });
   });
+  const addBtn = $('#btn-add-folder');
+  if (addBtn) addBtn.addEventListener('click', createFolderFlow);
+}
+
+function renderCards() {
+  const lib = $('#library');
+  const empty = $('#empty-lib');
+  const tracks = App.tracks || [];
+  // Filtre les cartes selon l'onglet actif.
+  const visible = filterTracksByFolder(tracks, App.activeFolder);
+  const emptyTitle = empty.querySelector('p');
+  const emptyHint = empty.querySelector('.dim');
+  $('#lib-count').textContent = `${tracks.length} morceau${tracks.length > 1 ? 'x' : ''}`;
+  if (tracks.length === 0) {
+    // Bibliothèque vide : message générique.
+    if (emptyTitle) emptyTitle.textContent = 'Aucun morceau pour le moment.';
+    if (emptyHint) emptyHint.textContent = 'Lancez un premier décorticage ci-dessus pour remplir le labo.';
+    empty.classList.remove('hidden');
+  } else if (visible.length === 0) {
+    // Dossier actif sans musique : ne pas afficher une grille vierge muette.
+    const label = App.activeFolder === FOLDER_UNCLASSIFIED
+      ? 'non classés' : `« ${App.activeFolder} »`;
+    if (emptyTitle) emptyTitle.textContent = `Aucun morceau dans ${label}.`;
+    if (emptyHint) emptyHint.textContent = 'Assignez des morceaux à ce dossier ou changez d’onglet.';
+    empty.classList.remove('hidden');
+  } else {
+    empty.classList.add('hidden');
+  }
+  lib.innerHTML = visible.map(renderCard).join('');
+  lib.querySelectorAll('article.card').forEach(card => bindCardEvents(card));
+}
+
+function filterTracksByFolder(tracks, folder) {
+  if (folder === FOLDER_ALL) return tracks;
+  if (folder === FOLDER_UNCLASSIFIED) return tracks.filter(t => !(t.folder || '').trim());
+  // Toutes les autres valeurs sont des noms de dossiers utilisateur (bruts) :
+  // aucune égalité avec les clés système n'est possible (elles sont préfixées).
+  return tracks.filter(t => (t.folder || '').trim() === folder);
+}
+
+function renderCard(t) {
+  const chipCls = t.status === 'ready' ? 'ready' : (t.status === 'error' ? 'error' : 'queue');
+  const chipTxt = t.status === 'ready' ? 'Prêt' : (t.status === 'error' ? 'Erreur' : t.status);
+  const thumb = t.thumbnail
+    ? `style="background-image:url('${esc(t.thumbnail)}')"`
+    : '';
+  const meta = [t.artist, t.duration ? fmtTime(t.duration) : null, t.bpm ? `${t.bpm.toFixed(0)} BPM` : null]
+    .filter(Boolean).join(' · ');
+  const folder = (t.folder || '').trim();
+  const folderOptions = (App.folders || []).map(f =>
+    `<option value="${esc(f)}"${f === folder ? ' selected' : ''}>${esc(f)}</option>`).join('');
+  return `
+    <article class="card" data-id="${esc(t.id)}" data-title="${esc(t.title)}"
+      data-artist="${esc(t.artist || '')}" data-folder="${esc(folder)}">
+      <div class="thumb" ${thumb}>
+        ${t.thumbnail ? '' : '<span class="fallback">🎸</span>'}
+        <button class="card-del" title="Supprimer" aria-label="Supprimer ${esc(t.title)}">✕</button>
+        <span class="chip ${chipCls}">${chipTxt}</span>
+      </div>
+      <div class="card-body">
+        <h3>${esc(t.title)}</h3>
+        <div class="meta">${esc(meta)}</div>
+        <div class="fade">${esc((t.stems || []).length)} stems — ${esc(t.source || '')}</div>
+        <div class="card-tools">
+          <select class="folder-select" title="Assigner à un dossier" aria-label="Dossier de ${esc(t.title)}">
+            <option value="">Non classé</option>
+            ${folderOptions}
+          </select>
+          <button type="button" class="card-edit" title="Renommer titre & artiste" aria-label="Renommer ${esc(t.title)}">✏️</button>
+        </div>
+        <button class="btn primary">Ouvrir le labo</button>
+      </div>
+    </article>`;
+}
+
+function bindCardEvents(card) {
+  const btn = card.querySelector('.btn');
+  btn.addEventListener('click', async () => {
+    try { await openPlayer(card.dataset.id); }
+    catch (_) { alert('Impossible d’ouvrir ce morceau (traitement incomplet ?).'); }
+  });
+  const del = card.querySelector('.card-del');
+  del.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    const name = card.dataset.title || 'ce morceau';
+    if (!confirm(`Supprimer « ${name} » de la bibliothèque ?`)) return;
+    try {
+      await API.remove(card.dataset.id);
+      refreshLibrary();
+    } catch (_) {
+      alert('Suppression impossible (backend injoignable ?).');
+    }
+  });
+  const edit = card.querySelector('.card-edit');
+  edit.addEventListener('click', (e) => {
+    e.stopPropagation();
+    openRenameDialog(card.dataset.id, card.dataset.title, card.dataset.artist);
+  });
+  const select = card.querySelector('.folder-select');
+  select.addEventListener('change', async (e) => {
+    e.stopPropagation();
+    try {
+      await API.updateTrackMeta(card.dataset.id, { folder: e.target.value });
+      refreshLibrary();
+    } catch (_) {
+      alert('Assignation au dossier impossible.');
+    }
+  });
+}
+
+/* ------------------ dialogue « renommer » + gestion des dossiers ------------ */
+function openRenameDialog(id, title, artist) {
+  const veil = document.createElement('div');
+  veil.className = 'modal-veil';
+  veil.innerHTML = `
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Renommer le morceau</h3>
+        <button type="button" class="btn ghost" data-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field-label" for="rename-title">Titre</label>
+        <input id="rename-title" class="text-input" type="text" value="${esc(title)}" maxlength="200" />
+        <label class="field-label" for="rename-artist">Artiste</label>
+        <input id="rename-artist" class="text-input" type="text" value="${esc(artist)}" maxlength="200" />
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close>Annuler</button>
+          <button type="button" class="btn primary" id="rename-save">Enregistrer</button>
+        </div>
+      </div>
+    </div>`;
+  veil.addEventListener('click', (e) => {
+    if (e.target === veil || e.target.closest('[data-close]')) veil.remove();
+  });
+  const save = veil.querySelector('#rename-save');
+  save.addEventListener('click', async () => {
+    const titleVal = veil.querySelector('#rename-title').value.trim();
+    const artistVal = veil.querySelector('#rename-artist').value.trim();
+    // Même garde que le serveur : un titre vide est refusé.
+    if (!titleVal) { alert('Le titre ne peut pas être vide.'); return; }
+    try {
+      await API.updateTrackMeta(id, { title: titleVal, artist: artistVal });
+      veil.remove();
+      refreshLibrary();
+    } catch (_) {
+      alert('Renommage impossible (backend injoignable ?).');
+    }
+  });
+  document.body.appendChild(veil);
+  const input = veil.querySelector('#rename-title');
+  if (input) { input.focus(); input.select(); }
+}
+
+async function createFolderFlow() {
+  const name = prompt('Nom du nouveau dossier :');
+  if (!name) return;
+  try {
+    await API.createFolder(name.trim());
+    refreshLibrary();
+  } catch (_) {
+    alert('Création du dossier impossible (backend injoignable ?).');
+  }
+}
+
+async function deleteFolderAndRefresh(name) {
+  try {
+    await API.deleteFolder(name);
+    // Si l'onglet supprimé était actif, on retombe sur « Tous ».
+    if (App.activeFolder === name) App.activeFolder = FOLDER_ALL;
+    refreshLibrary();
+  } catch (_) {
+    alert('Suppression du dossier impossible.');
+  }
 }
 
 async function openPlayer(id) {

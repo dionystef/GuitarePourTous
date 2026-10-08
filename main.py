@@ -520,6 +520,7 @@ def _summary(meta: dict) -> dict:
         "id": meta.get("id"),
         "title": meta.get("title"),
         "artist": meta.get("artist"),
+        "folder": meta.get("folder"),
         "duration": meta.get("duration"),
         "bpm": meta.get("bpm"),
         "status": meta.get("status", "unknown"),
@@ -545,6 +546,131 @@ def list_tracks() -> list[dict]:
         rows.append(_summary(meta))
     rows.sort(key=lambda r: r.get("created_at") or "", reverse=True)
     return rows
+
+
+# --------------------------------------------------------------------------- #
+# Dossiers virtuels de la bibliothèque
+# --------------------------------------------------------------------------- #
+def _folders_file() -> Path:
+    """Chemin du fichier JSON qui persiste la liste des dossiers créés par
+    l'utilisateur (``<DATA_DIR>/folders.json``)."""
+    return DATA_DIR / "folders.json"
+
+
+def _load_folders() -> list[str]:
+    """Retourne les noms de dossiers persistés dans ``folders.json``.
+
+    Fichier absents, corrompu ou de forme inattendue → liste vide (repli sûr).
+    """
+    p = _folders_file()
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text("utf-8"))
+    except Exception:
+        return []
+    if isinstance(data, list):
+        return [str(x).strip() for x in data if str(x).strip()]
+    if isinstance(data, dict):
+        # Tolérance : un objet ``{"Rock": true}`` est accepté en cas d'évolution
+        # du format, on ne conserve que les clés non vides.
+        return [str(k).strip() for k in data if str(k).strip()]
+    return []
+
+
+def _save_folders(folders: list[str]) -> None:
+    """Persiste la liste ordonnée des dossiers dans ``folders.json``."""
+    normalized = [str(f).strip() for f in folders if str(f).strip()]
+    # Écriture atomique : on n'expose jamais un fichier à moitié écrit.
+    tmp = _folders_file().with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(_folders_file())
+
+
+def _write_metadata(meta_path: Path, meta: dict) -> None:
+    """Écrit un ``metadata.json`` de façon atomique (tmp + replace).
+
+    Évite qu'une écriture interrompue (crash, coupure) ne laisse un fichier
+    tronqué qui ferait considérer le morceau comme corrompu par ``_summary``/GET.
+    """
+    tmp = meta_path.with_name(meta_path.name + ".tmp")
+    tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(meta_path)
+
+
+# Noms réservés aux onglets système du frontend (Tous / Non classés) : un
+# dossier utilisateur portant ce nom rendrait le filtrage ambigu.
+_RESERVED_FOLDER_NAMES = {"all", "unclassified"}
+
+
+def _is_reserved_folder_name(name: str) -> bool:
+    """Retourne ``True`` si un nom de dossier doit être écarté de la liste.
+
+    Deux cas sont couverts, quelle que soit la provenance (``folders.json`` ou
+    données de métadonnées légacy) :
+      * les noms réservés aux onglets système (``all`` / ``unclassified``,
+        insensibles à la casse) ;
+      * le préfixe ``__``, espace de noms interne des clés d'onglets du frontend
+        (``__all__`` / ``__none__``).
+    """
+    n = str(name).strip()
+    return n.lower() in _RESERVED_FOLDER_NAMES or n.startswith("__")
+
+
+def _validate_folder_name(name: str) -> str:
+    """Valide et nettoie un nom de dossier NON VIDE.
+
+    Lève ``HTTPException(400)`` si le nom est vide, trop long, réservé, contient
+    des caractères de contrôle ou un séparateur de chemin (``/`` ou ``\\``).
+    Ces derniers sont interdits car le nom est utilisé comme segment de route
+    pour ``DELETE /api/folders/{name}`` : un ``/`` cassèrait le routage.
+
+    Les noms ``all`` et ``unclassified`` (insensibles à la casse) sont réservés :
+    ils ne doivent jamais entrer en collision avec les onglets « Tous » /
+    « Non classés » du frontend.
+    """
+    cleaned = str(name).strip()
+    if not cleaned:
+        raise HTTPException(400, "Nom de dossier vide.")
+    if len(cleaned) > 100:
+        raise HTTPException(400, "Nom de dossier trop long (100 caractères max).")
+    if any(ord(c) < 32 for c in cleaned):
+        raise HTTPException(400, "Nom de dossier invalide (caractères de contrôle).")
+    if "/" in cleaned or "\\" in cleaned:
+        raise HTTPException(400, "Nom de dossier invalide (le caractère « / » n'est pas autorisé).")
+    if cleaned.lower() in _RESERVED_FOLDER_NAMES:
+        raise HTTPException(400, "Nom de dossier réservé (onglet système).")
+    # Le préfixe « __ » est l'espace de noms interne des onglets système du
+    # frontend (__all__ / __none__) : aucun dossier utilisateur ne doit
+    # l'utiliser, sans quoi la logique de filtre dépendrait d'une équality
+    # avec une chaîne utilisateur incontrôlée.
+    if cleaned.startswith("__"):
+        raise HTTPException(400, "Nom de dossier invalide (préfixe réservé « __ »).")
+    return cleaned
+
+
+def _tracks_folders_from_meta() -> set[str]:
+    """Consolide les dossiers réellement déclarés dans les ``metadata.json``.
+
+    Un dossier peut exister sans être dans ``folders.json`` (ex. assignation
+    directe via le sélecteur de carte) : il doit donc apparaître dans la liste.
+
+    Les noms réservés (``all``/``unclassified``, insensibles à la casse) et le
+    préfixe ``__`` (espace interne du frontend) sont ignorés : ce sont des
+    valeurs corrompues ou historiques qui ne doivent jamais créer d'onglet
+    ambigu avec les clés système.
+    """
+    names: set[str] = set()
+    for meta_path in DATA_DIR.glob("*/metadata.json"):
+        try:
+            meta = json.loads(meta_path.read_text("utf-8"))
+        except Exception:
+            continue
+        folder = str(meta.get("folder") or "").strip()
+        if not folder or _is_reserved_folder_name(folder):
+            continue
+        names.add(folder)
+    return names
 
 
 # --------------------------------------------------------------------------- #
@@ -706,6 +832,129 @@ def delete_track(track_id: str):
 class StructureUpdate(BaseModel):
     line_breaks: list[int] = []
     sections: dict[str, str] = {}  # e.g. {"1": "Intro", "5": "Couplet", "21": "Refrain"}
+
+
+class TrackMetaUpdate(BaseModel):
+    """Payload de mise à jour des métadonnées d'un morceau (titre/artiste/dossier).
+
+    Chaque champ est optionnel : seuls les champs explicitement fournis sont
+    modifiés. ``None`` (champ absent) = ne pas toucher ; ``""`` = effacer.
+    """
+
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    folder: Optional[str] = None
+
+
+@app.patch("/api/tracks/{track_id}")
+async def update_track_meta(track_id: str, request: Request):
+    """Met à jour ``title`` / ``artist`` / ``folder`` d'un morceau.
+
+    - Les trois champs sont nettoyés via ``.strip()`` ;
+    - un ``folder`` vide est stocké comme ``None`` (non classé) ;
+    - le titre ne peut pas devenir vide après nettoyage (400).
+
+    Le corps JSON est validé via le modèle :class:`TrackMetaUpdate` (chaque
+    champ est optionnel ; un champ absent = on n'y touche pas).
+    """
+    if not _safe_track_id(track_id):
+        raise HTTPException(404, "Morceau inconnu.")
+    meta_path = DATA_DIR / track_id / "metadata.json"
+    if not meta_path.exists():
+        raise HTTPException(404, "Morceau inconnu.")
+    try:
+        body = await request.json()
+        update = TrackMetaUpdate.model_validate(body)
+    except Exception as exc:
+        raise HTTPException(400, f"Payload de mise à jour invalide : {exc}")
+    try:
+        meta = json.loads(meta_path.read_text("utf-8"))
+        if update.title is not None:
+            title = update.title.strip()
+            if not title:
+                raise HTTPException(400, "Le titre ne peut pas être vide.")
+            meta["title"] = title
+        if update.artist is not None:
+            # Un artiste vide est accepté (l'utilisateur peut vouloir l'effacer),
+            # mais on stocke une chaîne nettoyée plutôt qu'un blanc.
+            meta["artist"] = update.artist.strip()
+        if update.folder is not None:
+            folder_raw = update.folder.strip()
+            # Un dossier vide (ou blanc) = on déclasse le morceau.
+            meta["folder"] = _validate_folder_name(folder_raw) if folder_raw else None
+        _write_metadata(meta_path, meta)
+        return _summary(meta)
+    except HTTPException:
+        raise
+    except Exception:
+        logger.exception("Mise à jour des métadonnées en échec pour %s", track_id)
+        raise HTTPException(500, "Erreur interne.")
+
+
+# --------------------------------------------------------------------------- #
+# Dossiers virtuels : liste consolidée, création et suppression
+# --------------------------------------------------------------------------- #
+@app.get("/api/folders")
+def list_folders():
+    """Liste consolidée et triée des dossiers de la bibliothèque.
+
+    Combine ``folders.json`` (dossiers créés explicitement par l'utilisateur)
+    et les dossiers déclarés dans les ``metadata.json`` des morceaux (assignation
+    directe via le sélecteur de carte). Renvoie un tableau de noms triés.
+
+    Les noms réservés (``all``/``unclassified``, insensibles à la casse) et le
+    préfixe ``__`` (espace interne du frontend) sont écartés des deux sources :
+    un ``folders.json`` historique peut contenir de tels noms créés avant la
+    réservation, et ils ne doivent jamais créer d'onglet ambigu.
+    """
+    names = {n for n in _load_folders() if not _is_reserved_folder_name(n)}
+    names |= _tracks_folders_from_meta()
+    return sorted(names)
+
+
+@app.post("/api/folders")
+def create_folder(name: str = Form("")):
+    """Crée un nouveau dossier et le persiste dans ``folders.json``."""
+    cleaned = _validate_folder_name(name)
+    folders = _load_folders()
+    if cleaned not in folders:
+        folders.append(cleaned)
+        _save_folders(folders)
+    return {"ok": True, "name": cleaned, "folders": sorted(set(folders))}
+
+
+@app.delete("/api/folders/{name}")
+def delete_folder(name: str):
+    """Supprime un dossier de ``folders.json`` et déclasse ses morceaux.
+
+    Tous les morceaux dont ``metadata.folder`` correspond à ce nom repassent à
+    ``folder = None`` (non classés), afin qu'aucune carte ne pointe vers un
+    dossier disparu.
+    """
+    cleaned = name.strip()
+    if not cleaned:
+        raise HTTPException(400, "Nom de dossier vide.")
+    folders = _load_folders()
+    if cleaned in folders:
+        _save_folders([f for f in folders if f != cleaned])
+    # Décasse systématiquement les morceaux affectés (même s'ils ne figuraient
+    # pas dans folders.json) : source de vérité = métadonnées des morceaux.
+    removed = 0
+    for meta_path in DATA_DIR.glob("*/metadata.json"):
+        try:
+            meta = json.loads(meta_path.read_text("utf-8"))
+        except Exception:
+            continue
+        if str(meta.get("folder") or "").strip() == cleaned:
+            meta["folder"] = None
+            _write_metadata(meta_path, meta)
+            removed += 1
+    return {
+        "ok": True,
+        "name": cleaned,
+        "removed_tracks": removed,
+        "folders": sorted(_load_folders()),
+    }
 
 
 @app.post("/api/tracks/{track_id}/structure")
