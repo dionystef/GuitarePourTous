@@ -10,23 +10,18 @@ on:
 jobs:
   test:
     runs-on: self-hosted
-    container:
-      image: guitare-ci:latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Installer les dépendances du projet
+      - name: Exécuter les tests dans le conteneur local
         run: |
-          pip install --no-build-isolation -r requirements.txt
-          pip install -r requirements-dev.txt
-
-      - name: Exécuter Pytest
-        run: pytest
-
-      - name: Exécuter les tests JS
-        run: node tests/js/resume.test.js
+          docker run --rm --pull never \
+            -v "$GITHUB_WORKSPACE:/app" \
+            -w /app \
+            guitare-ci:latest \
+            sh -c "pytest && node tests/js/resume.test.js"
 
   deploy:
     needs: test
