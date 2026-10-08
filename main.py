@@ -100,7 +100,7 @@ def get_git_version() -> str:
     except Exception:
         pass
     # 3. Repli par défaut
-    return "v1.2.0"
+    return "v1.3.0"
 
 
 APP_VERSION = get_git_version()
