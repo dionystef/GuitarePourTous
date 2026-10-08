@@ -15,6 +15,9 @@ nominal (et une fois via la génération de référence de repli).
 """
 import json
 import math
+import os
+import tempfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -50,24 +53,26 @@ def _noise_stereo(sr=_SR, duration=1.0, amp=0.3, seed=1):
 # Presets / normalisation
 # --------------------------------------------------------------------------- #
 def test_get_presets_returns_ordered_list():
-    assert mastering.get_presets() == ["standard", "rock", "acoustic"]
+    assert mastering.get_presets() == ["standard", "rock", "acoustic", "reggae"]
 
 
 def test_get_presets_returns_a_copy():
     presets = mastering.get_presets()
     presets.append("bogus")
-    assert mastering.get_presets() == ["standard", "rock", "acoustic"]
+    assert mastering.get_presets() == ["standard", "rock", "acoustic", "reggae"]
 
 
 def test_normalize_preset_accepts_known_names():
     assert mastering._normalize_preset("standard") == "standard"
     assert mastering._normalize_preset("rock") == "rock"
     assert mastering._normalize_preset("acoustic") == "acoustic"
+    assert mastering._normalize_preset("reggae") == "reggae"
 
 
 def test_normalize_preset_is_case_and_space_insensitive():
     assert mastering._normalize_preset("  Rock  ") == "rock"
     assert mastering._normalize_preset("ACOUSTIC") == "acoustic"
+    assert mastering._normalize_preset(" REGGAE ") == "reggae"
 
 
 def test_normalize_preset_falls_back_to_standard():
@@ -128,6 +133,74 @@ def test_generate_reference_wav_accepts_unknown_preset_shape(tmp_path):
     mastering._generate_reference_wav(out, "nope", sample_rate=22050, duration=0.3)
     data, sr = sf.read(str(out), dtype="float32")
     assert sr == 22050 and data.ndim == 2
+
+
+# --------------------------------------------------------------------------- #
+# Preset « reggae » : présence, validation et gabarit
+# --------------------------------------------------------------------------- #
+def test_reggae_preset_present_and_validated(tmp_path, monkeypatch):
+    """Le preset « reggae » est exposé et accepté comme les autres presets.
+
+    Vérifie :
+      * sa présence dans ``REFERENCE_PRESETS`` et ``get_presets()`` ;
+      * sa validation par ``_normalize_preset`` (insensible à la casse/espaces) ;
+      * sa résolution vers un fichier de référence ``reggae.wav`` dédié
+        (génération de repli si absent, jamais de collision avec ``standard``).
+    """
+    assert "reggae" in mastering.REFERENCE_PRESETS
+    assert "reggae" in mastering.get_presets()
+    assert mastering._normalize_preset("reggae") == "reggae"
+    assert mastering._normalize_preset("  REGGAE  ") == "reggae"
+
+    monkeypatch.setattr(mastering, "REFERENCE_DIR", tmp_path)
+    ref = mastering._resolve_reference("reggae")
+    assert ref.name == "reggae.wav"
+    assert ref.exists()
+    assert ref != mastering._resolve_reference("standard")
+
+
+def test_generate_reference_wav_reggae_is_bass_focused(tmp_path):
+    """L'étalon de repli « reggae » est axé sur les basses (fondamental ~130 Hz).
+
+    Le gabarit synthétique doit :
+      * avoir son pic spectral dominant sur le fondamental grave (~130 Hz) ;
+      * concentrer proportionnellement plus d'énergie dans les basses que le
+        gabarit « standard » (profil « axe basses »).
+    """
+    def _profile(preset):
+        out = tmp_path / f"{preset}.wav"
+        mastering._generate_reference_wav(out, preset, sample_rate=22050, duration=0.5)
+        data, sr = sf.read(str(out), dtype="float32")
+        mono = np.mean(data, axis=1)
+        spec = np.abs(np.fft.rfft(mono))
+        freqs = np.fft.rfftfreq(mono.shape[0], 1.0 / sr)
+        main_idx = int(np.argmax(spec[1:])) + 1           # pic hors DC
+        low = spec[(freqs >= 20) & (freqs <= 250)].sum()
+        high = spec[(freqs >= 1500) & (freqs <= 6000)].sum()
+        return freqs[main_idx], low / max(high, 1e-12)
+
+    reggae_f0, reggae_bass_ratio = _profile("reggae")
+    _, standard_bass_ratio = _profile("standard")
+
+    assert abs(reggae_f0 - 130.0) < 3.0, f"fondamental reggae attendu ~130 Hz, obtenu {reggae_f0:.1f} Hz"
+    assert reggae_bass_ratio > standard_bass_ratio, (
+        "le gabarit reggae doit accentuer les basses plus que « standard » : "
+        f"{reggae_bass_ratio:.3f} vs {standard_bass_ratio:.3f}")
+
+
+def test_apply_mastering_with_reggae_generates_bass_reference(tmp_path, monkeypatch):
+    """Le chemin complet ``apply_mastering`` accepte le preset « reggae » : la
+    référence de repli (dédiée, pas `standard`) est générée et le master produit."""
+    monkeypatch.setattr(mastering, "REFERENCE_DIR", tmp_path)
+    target = tmp_path / "mix.wav"
+    _write_stem(target, _SR, _noise_stereo(_SR, 0.3))
+    out = tmp_path / "master.wav"
+    mastering.apply_mastering(target, "reggae", out)
+    assert out.exists()
+    # La référence reggae dédiée a été générée (distincte de standard).
+    assert (tmp_path / "reggae.wav").exists()
+    data, sr = sf.read(str(out), dtype="float32")
+    assert sr == _SR and data.ndim == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +270,114 @@ def test_resolve_reference_generation_failure_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(mastering, "_generate_reference_wav", _boom)
     with pytest.raises(mastering.ReferenceNotFoundError):
         mastering._resolve_reference("standard")
+
+
+def test_resolve_reference_falls_back_to_writable_cache_on_readonly_dir(tmp_path, monkeypatch):
+    """REFERENCE_DIR en lecture seule/vide → le repli aboutit dans un cache insc.*
+
+    Simule le montage ``:ro`` de production : le dossier de référence n'est ni
+    peuplé ni inscriptible. ``_resolve_reference`` doit générer l'étalon dans un
+    cache en écriture (et non plus lever ``ReferenceNotFoundError``), ce qui
+    garantit le fonctionnement du mastering sur un dépôt fraîchement déployé.
+    """
+    ref_dir = tmp_path / "references"
+    ref_dir.mkdir()
+    os.chmod(ref_dir, 0o555)  # lecture seule (permissions POSIX)
+    cache_dir = tmp_path / "cache"
+
+    monkeypatch.setattr(mastering, "REFERENCE_DIR", ref_dir)
+    # La sonde ``_is_writable`` reflète un dossier monté en lecture seule.
+    monkeypatch.setattr(mastering, "_is_writable", lambda _dir: False)
+    monkeypatch.setattr(mastering, "_reference_cache_dir", lambda: cache_dir)
+
+    ref = mastering._resolve_reference("reggae")
+
+    assert ref.exists(), "l'étalon de repli doit être généré"
+    assert ref.parent == cache_dir, "le repli doit vivre dans le cache inscriptible"
+    assert ref.name == "reggae.wav"
+    # Le dossier de référence (lecture seule) reste intact / non peuplé.
+    assert list(ref_dir.iterdir()) == [], "le dossier :ro ne doit pas être écrit"
+
+
+def test_is_writable_true_on_writable_dir(tmp_path):
+    """``_is_writable`` sonde réellement l'écriture (fichier sentinelle)."""
+    assert mastering._is_writable(tmp_path) is True
+
+
+def test_is_writable_false_on_non_writable_path(tmp_path):
+    """Un chemin dont l'ancêtre est un fichier (non inscriptible / non créable)
+    doit être détecté comme non accessible en écriture."""
+    not_a_dir = tmp_path / "afile"
+    not_a_dir.write_text("x")
+    assert mastering._is_writable(not_a_dir / "sub") is False
+
+
+def test_is_writable_false_on_readonly_dir(tmp_path):
+    """Un répertoire en lecture seule (permissions POSIX retirées) est détecté
+    comme non inscriptible — simulateur du montage ``:ro``."""
+    ro = tmp_path / "ro"
+    ro.mkdir()
+    os.chmod(ro, 0o555)
+    try:
+        assert mastering._is_writable(ro) is False
+    finally:
+        os.chmod(ro, 0o755)
+
+
+def test_reference_cache_dir_prefers_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("GUITARLAB_REFERENCE_CACHE_DIR", str(tmp_path / "override"))
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    assert mastering._reference_cache_dir() == tmp_path / "override"
+
+
+def test_reference_cache_dir_uses_data_dir_when_no_override(monkeypatch, tmp_path):
+    monkeypatch.delenv("GUITARLAB_REFERENCE_CACHE_DIR", raising=False)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path / "data"))
+    assert mastering._reference_cache_dir() == tmp_path / "data" / "references_cache"
+
+
+def test_reference_cache_dir_falls_back_to_tmp(monkeypatch):
+    monkeypatch.delenv("GUITARLAB_REFERENCE_CACHE_DIR", raising=False)
+    monkeypatch.delenv("DATA_DIR", raising=False)
+    cache = mastering._reference_cache_dir()
+    assert cache.name == "guitarlab_references"
+    assert cache.is_dir()
+    assert cache.parent == Path(tempfile.gettempdir())
+
+
+def test_resolve_reference_real_fallback_into_data_cache(tmp_path, monkeypatch):
+    """Sans surcharge, un dossier ``references`` en lecture seule bascule vers le
+    cache ``DATA_DIR/references_cache`` (via le vrai ``_is_writable``)."""
+    ref_dir = tmp_path / "references"
+    ref_dir.mkdir()
+    os.chmod(ref_dir, 0o555)
+    data = tmp_path / "data"
+    data.mkdir()
+    try:
+        monkeypatch.setattr(mastering, "REFERENCE_DIR", ref_dir)
+        monkeypatch.setenv("DATA_DIR", str(data))
+        monkeypatch.delenv("GUITARLAB_REFERENCE_CACHE_DIR", raising=False)
+        ref = mastering._resolve_reference("reggae")
+        assert ref.exists()
+        assert ref.parent == data / "references_cache", \
+            "le repli doit être persisté sous DATA_DIR/references_cache"
+    finally:
+        os.chmod(ref_dir, 0o755)
+
+
+def test_resolve_reference_cache_unavailable_raises_mastering_error(tmp_path, monkeypatch):
+    """Si le cache lui-même est indisponible, ``_resolve_reference`` doit lever une
+    erreur métier (``ReferenceNotFoundError``) — jamais laisser fuir un ``OSError``
+    brut, pour que l'endpoint puisse la convertir en réponse 500 propre."""
+    not_a_dir = tmp_path / "afile"
+    not_a_dir.write_text("x")
+
+    monkeypatch.setattr(mastering, "REFERENCE_DIR", not_a_dir / "refs")  # non inscriptible
+    monkeypatch.setenv("GUITARLAB_REFERENCE_CACHE_DIR", str(not_a_dir / "badcache"))  # non créable
+    monkeypatch.delenv("DATA_DIR", raising=False)
+
+    with pytest.raises(mastering.ReferenceNotFoundError):
+        mastering._resolve_reference("reggae")
 
 
 # --------------------------------------------------------------------------- #
@@ -373,6 +554,18 @@ def data(monkeypatch, tmp_path):
     return tmp_path
 
 
+def _use_isolated_reference_dir(monkeypatch) -> Path:
+    """Redirige le répertoire des références vers un dossier temporaire vide.
+
+    Permet de tester la génération de repli (et non un fichier `references/*.wav`
+    déjà présent sur la machine/CI), tout en isolant le dépôt de tout effet de
+    bord (les étalons sont gitignorés via `*.wav`).
+    """
+    ref_dir = Path(tempfile.mkdtemp(prefix="guitarlab_refs_"))
+    monkeypatch.setattr(mastering, "REFERENCE_DIR", ref_dir)
+    return ref_dir
+
+
 def _make_track(data, track_id="abc123", with_stems=True, metabase=True):
     """Crée un morceau + ses stems, renvoie (dir, metadata dict)."""
     d = data / track_id
@@ -395,7 +588,7 @@ def test_mastering_presets_endpoint():
         r = await client.get("/api/mastering/presets")
         assert r.status_code == 200
         body = r.json()
-        assert body["presets"] == ["standard", "rock", "acoustic"]
+        assert body["presets"] == ["standard", "rock", "acoustic", "reggae"]
 
     run_app(main.app, coro)
 
@@ -481,6 +674,24 @@ def test_master_track_unknown_preset_falls_back(data):
         r = await client.post(
             "/api/tracks/t5/master",
             json={"volumes": {}, "preset": "metal"},
+        )
+        assert r.status_code == 200, r.text
+        assert (d / "master.wav").exists()
+
+    run_app(main.app, coro)
+
+
+def test_master_track_reggae_preset_success(data, monkeypatch):
+    """End-to-end via l'API avec le preset « reggae » : le mastering prend le
+    preset dédié (référence de repli régénérée dans un dossier isolé) et produit
+    un master."""
+    _use_isolated_reference_dir(monkeypatch)
+    d, _ = _make_track(data, "t13")
+
+    async def coro(client):
+        r = await client.post(
+            "/api/tracks/t13/master",
+            json={"volumes": {}, "preset": "reggae"},
         )
         assert r.status_code == 200, r.text
         assert (d / "master.wav").exists()

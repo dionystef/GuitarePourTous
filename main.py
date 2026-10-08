@@ -855,7 +855,7 @@ class MasteringRequest(BaseModel):
 
     ``volumes`` mappe un nom de stem vers son gain multiplicatif ; un stem non
     référence est mixé à l'unité. ``preset`` désigne la référence de calibrage
-    (``standard`` par défaut, ``rock`` / ``acoustic`` en variantes).
+    (``standard`` par défaut, ``rock`` / ``acoustic`` / ``reggae`` en variantes).
     """
 
     volumes: dict[str, float] = {}

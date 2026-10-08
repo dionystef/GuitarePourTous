@@ -42,6 +42,9 @@ services:
     volumes:
       # Bibliothèque locale des morceaux (persistée sur l'hôte).
       - ./data:/app/data
+      # Étalons de référence du mastering (presets standard/rock/acoustic/reggae)
+      # montés en lecture seule : évite de les embarquer dans l'image.
+      - ./references:/app/references:ro
       # Frontend monté en lecture seule — permet de développer sans rebuild.
       - ./static:/app/static:ro
       # Code Python du serveur monté en lecture seule — modification à chaud

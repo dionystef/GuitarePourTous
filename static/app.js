@@ -51,7 +51,7 @@ const API = {
   deleteFolder: (name) =>
     API.json(`/api/folders/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   // Mastering : re-mix pondéré des stems + calibrage Matchering.
-  // `body` = { volumes: {stem: gain}, preset: 'standard'|'rock'|'acoustic' }.
+  // `body` = { volumes: {stem: gain}, preset: 'standard'|'rock'|'acoustic'|'reggae' }.
   masterTrack: (id, body) => API.json(`/api/tracks/${id}/master`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1282,7 +1282,7 @@ function buildPlayer(track) {
   function populatePresets(list) {
     const presets = Array.isArray(list) && list.length
       ? list
-      : ['standard', 'rock', 'acoustic'];
+      : ['standard', 'rock', 'acoustic', 'reggae'];
     if (!presetSelect) return;
     presetSelect.innerHTML = presets.map(p => {
       const label = p.charAt(0).toUpperCase() + p.slice(1);

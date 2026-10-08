@@ -7,18 +7,23 @@ Ce service automatise la production d'un master à partir des stems séparés
      longueurs, applique un passe-haut Butterworth (ordre 2) pour éliminer les
      infrabasses de smartphone, puis écrit le mix intermédiaire en WAV 16-bit ;
   2. ``apply_mastering`` — calibre ce mix contre un fichier de référence
-     (preset ``standard``/``rock``/``acoustic``) via Matchering ;
+     (preset ``standard``/``rock``/``acoustic``/``reggae``) via Matchering ;
   3. ``get_presets`` — expose la liste ordonnée des presets disponibles.
 
 Les fichiers de référence vivent dans ``references/<preset>.wav`` à la racine
 du dépôt. S'ils sont absents, un étalon de repli (spectre harmonique stéréo
 déterministe) est généré à la volée afin que le mastering ne reste jamais
-bloqué par un preset manquant.
+bloqué par un preset manquant. En production, ``references/`` est monté en
+lecture seule (« :ro ») : la génération bascule alors vers un cache inscriptible
+dédié (``DATA_DIR/references_cache`` ou surcharge ``GUITARLAB_REFERENCE_CACHE_DIR``)
+plutôt que d'échouer sur un dossier non inscriptible.
 """
 from __future__ import annotations
 
 import logging
 import math
+import os
+import tempfile
 from pathlib import Path
 from typing import Final
 
@@ -32,7 +37,7 @@ logger = logging.getLogger("guitarlab.mastering")
 # Presets / répertoire des références
 # --------------------------------------------------------------------------- #
 DEFAULT_PRESET: Final[str] = "standard"
-REFERENCE_PRESETS: Final[list[str]] = ["standard", "rock", "acoustic"]
+REFERENCE_PRESETS: Final[list[str]] = ["standard", "rock", "acoustic", "reggae"]
 REFERENCE_DIR: Final[Path] = Path(__file__).resolve().parents[1] / "references"
 _DEFAULT_SR: Final[int] = 44100
 # Borne de magnitude du gain (gain multiplicatif) : au-delà, la valeur est
@@ -85,7 +90,8 @@ def get_presets() -> list[str]:
     """Retourne la liste ordonnée des presets de référence disponibles.
 
     Returns:
-        list[str]: Les noms de presets (``["standard", "rock", "acoustic"]``).
+        list[str]: Les noms de presets
+        (``["standard", "rock", "acoustic", "reggae"]``).
     """
     return list(REFERENCE_PRESETS)
 
@@ -144,7 +150,9 @@ def _generate_reference_wav(path: Path, preset: str,
     cible exploitable même sans étalon commercial fourni :
       * ``standard`` — équilibre neutre ;
       * ``rock``  — fondamental plus aigu, harmoniques plus préservées ;
-      * ``acoustic`` — fondamental plus grave, harmoniques plus amorties.
+      * ``acoustic`` — fondamental plus grave, harmoniques plus amorties ;
+      * ``reggae`` — fondamental grave (~130 Hz) et décroissance rapide des
+        harmoniques : le spectre est axé sur les basses (gros rendu grave).
 
     L'écriture est stéréo, normalisée (pic ~0.6) et reproductible (graine fixe).
 
@@ -162,8 +170,12 @@ def _generate_reference_wav(path: Path, preset: str,
     rng = np.random.default_rng(42)
 
     # Gabarit spectral par preset : fondamental + raideur de la queue harmonique.
-    fundamental = {"standard": 210.0, "rock": 233.0, "acoustic": 196.0}.get(preset, 210.0)
-    rolloff = {"standard": 0.8, "rock": 0.55, "acoustic": 0.95}.get(preset, 0.8)
+    # Un ``rolloff`` élevé (décroissance rapide) concentre l'énergie sur le
+    # fondamental → profil « axe basses » (``reggae``>``acoustic``>``standard``
+    # >``rock``). Au contraire, ``rock`` (rolloff le plus faible) préserve les
+    # harmoniques médium/aiguës.
+    fundamental = {"standard": 210.0, "rock": 233.0, "acoustic": 196.0, "reggae": 130.0}.get(preset, 210.0)
+    rolloff = {"standard": 0.8, "rock": 0.55, "acoustic": 0.95, "reggae": 1.2}.get(preset, 0.8)
 
     tonal = np.zeros(n, dtype=np.float64)
     mult = 1
@@ -195,13 +207,71 @@ def _generate_reference_wav(path: Path, preset: str,
     return path
 
 
+def _is_writable(dir_path: Path) -> bool:
+    """Indique si ``dir_path`` accepte réellement une écriture (sonde réelle).
+
+    On tente de créer puis de supprimer un fichier sentinelle : tout ``OSError``
+    (dossier en lecture seule, permissions insuffisantes, montage ``:ro``…)
+    signale un répertoire non inscriptible. La détection est faite à la volée
+    plutôt que d'après les bits ``mode``, qui ne sont pas fiables sous root.
+
+    Paramètres:
+        dir_path: répertoire à tester.
+
+    Returns:
+        bool: ``True`` si une écriture y est réellement possible.
+    """
+    try:
+        dir_path.mkdir(parents=True, exist_ok=True)
+        probe = dir_path / f".write-probe-{os.getpid()}"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except OSError:
+        return False
+
+
+def _reference_cache_dir() -> Path:
+    """Répertoire inscriptible où générer les étalons de repli.
+
+    En production, ``references/`` est monté en lecture seule (``:ro``) : il ne
+    peut pas accueillir la génération d'un étalon absent. On bascule alors vers
+    un cache en écriture, par ordre de préférence :
+
+      1. ``GUITARLAB_REFERENCE_CACHE_DIR`` — surcharge explicite du déploiement ;
+      2. un cache persisté sous ``DATA_DIR`` (monté en écriture) — évite de
+         régénérer l'étalon de repli à chaque redémarrage ;
+      3. un répertoire temporaire dédié (repli ultime, non persisté).
+
+    Returns:
+        Path: répertoire de cache (créé au besoin).
+    """
+    env = os.environ.get("GUITARLAB_REFERENCE_CACHE_DIR")
+    if env:
+        base = Path(env)
+    else:
+        data_dir = os.environ.get("DATA_DIR")
+        if data_dir:
+            base = Path(data_dir) / "references_cache"
+        else:
+            base = Path(tempfile.gettempdir()) / "guitarlab_references"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 def _resolve_reference(preset: str) -> Path:
     """Résout un fichier de référence WAV pour un preset, avec repli sûr.
 
-    Si le fichier ``references/<preset>.wav`` est absent, un étalon de repli est
-    généré. Ce mécanisme garantit que ``apply_mastering`` ne se retrouve jamais
-    sans cible de référence (le repli sur preset manquant demandé par la
-    mission).
+    Si le fichier ``references/<preset>.wav`` est présent (étalon réel fourni),
+    il est utilisé tel quel. Sinon un étalon de repli est généré dans un
+    emplacement **inscriptible** :
+
+      * ``REFERENCE_DIR`` s'il est inscriptible (dev / tests) → la référence
+        générée y est persistée ;
+      * sinon (dossier monté ``:ro`` en production) un cache dédié en écriture,
+        de sorte que le mastering ne soit jamais bloqué par un dossier de
+        référence en lecture seule (plus de ``ReferenceNotFoundError`` sur un
+        dépôt fraîchement déployé sans références).
 
     Paramètres:
         preset: libellé de preset ; un nom inconnu retombe sur ``standard``.
@@ -210,23 +280,31 @@ def _resolve_reference(preset: str) -> Path:
         Path: chemin vers un fichier de référence exploitable et existant.
 
     Raises:
-        ReferenceNotFoundError: si ni le fichier ni sa génération ne réussissent.
+        ReferenceNotFoundError: si aucune génération inscriptible ne réussit.
     """
     # Normalisation défensive : un libellé inconnu (ou déjà normalisé) retombe
     # systématiquement sur le preset par défaut.
     preset = _normalize_preset(preset)
 
     path = REFERENCE_DIR / f"{preset}.wav"
-    if not path.exists():
-        logger.warning("Référence « %s » absente → génération d'un étalon de repli",
-                       path.name)
-        try:
-            _generate_reference_wav(path, preset)
-        except Exception as exc:  # noqa: BLE001 — repli de dernier recours
-            logger.error("Génération de la référence « %s » en échec", path.name)
-            raise ReferenceNotFoundError(
-                f"Référence « {preset} » indisponible et non générable.") from exc
-    return path
+    if path.exists():
+        return path  # étalon réel disponible (ex. montage :ro en production)
+
+    # Référence absente → on la génère dans un emplacement inscriptible.
+    target_dir = REFERENCE_DIR if _is_writable(REFERENCE_DIR) else _reference_cache_dir()
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{preset}.wav"
+    logger.warning(
+        "Référence « %s » absente → génération d'un étalon de repli dans %s",
+        path.name, target_dir,
+    )
+    try:
+        _generate_reference_wav(target, preset)
+    except Exception as exc:  # noqa: BLE001 — repli de dernier recours
+        logger.error("Génération de la référence « %s » en échec", target.name)
+        raise ReferenceNotFoundError(
+            f"Référence « {preset} » indisponible et non générable.") from exc
+    return target
 
 
 def _sanitize_finite(data: np.ndarray, name: str) -> np.ndarray:
