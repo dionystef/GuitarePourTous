@@ -11,7 +11,7 @@ setuptools<70
 fastapi==0.110.3
 uvicorn[standard]==0.29.0
 python-multipart==0.0.9
-anyio==4.15.1
+anyio>=3.7.1,<5
 
 # --- Numérique / audio ---
 numpy==1.26.4
