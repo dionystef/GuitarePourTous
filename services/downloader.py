@@ -34,8 +34,9 @@ ALLOWED_AUDIO_EXT = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", "
 
 
 def _ffmpeg(args: list[str]) -> None:
+    bin_ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
     subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args],
+        [bin_ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *args],
         check=True,
     )
 
@@ -191,6 +192,9 @@ def _youtube_ydl_opts(**extra) -> dict:
         "socket_timeout": SOCKET_TIMEOUT,
         "match_filter": _youtube_match_filter,
     }
+    bin_ffmpeg = shutil.which("ffmpeg")
+    if bin_ffmpeg:
+        opts["ffmpeg_location"] = str(Path(bin_ffmpeg).parent)
     opts.update(extra)
     return opts
 

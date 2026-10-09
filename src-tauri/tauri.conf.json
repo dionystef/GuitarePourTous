@@ -25,7 +25,8 @@
         "type": "downloadBootstrapper"
       },
       "nsis": {
-        "installMode": "currentUser"
+        "installMode": "currentUser",
+        "compression": "zlib"
       }
     },
     "resources": [

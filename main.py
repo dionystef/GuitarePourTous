@@ -435,11 +435,10 @@ class JobManager:
                 json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
             self._cleanup_original(track_dir)
             self.log(track_id, "✔ Terminé. Bonne répétition ! 🎸", 100, status="ready")
-        except Exception:  # noqa: BLE001 — détail technique journalisé côté serveur
-            logger.exception("Pipeline en échec pour %s", track_id)
-            # Message générique côté client : ne pas exposer `str(exc)` ni les
-            # chemins/source absolus (chemin local de l'upload, URL, …).
-            self.log(track_id, "✖ Échec du traitement.", 100, status="error")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Pipeline en échec pour %s : %s", track_id, exc)
+            err_msg = str(exc) or exc.__class__.__name__
+            self.log(track_id, f"✖ Échec du traitement : {err_msg}", 100, status="error")
             # Un morceau annulé ne doit pas recréer de `metadata.json` d'erreur.
             if self.is_cancelled(track_id):
                 return

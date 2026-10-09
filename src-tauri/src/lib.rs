@@ -286,6 +286,7 @@ fn spawn_engine(app: &tauri::App, win: tauri::WebviewWindow) {
         .env("PORT", BACKEND_PORT.to_string())
         .env("DATA_DIR", &data_dir)
         .env("PATH", &env_path)
+        .env("PYTHONUNBUFFERED", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
