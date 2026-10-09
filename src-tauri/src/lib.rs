@@ -265,6 +265,13 @@ fn spawn_engine(app: &tauri::App, win: tauri::WebviewWindow) {
             }
         });
 
+    // Nettoyage du préfixe Windows ``\\?\`` : les chemins issus de
+    // `current_exe()`/`LOCALAPPDATA`/`USERPROFILE` peuvent arriver sous la
+    // forme verbeuse (ex. `\\?\C:\...`), ce qui déclenche `[Errno 22] Invalid
+    // argument` côté Python via `DATA_DIR`. On réécrit le chemin avec le
+    // préfixe standard attendu par les API de fichiers.
+    let data_dir = PathBuf::from(data_dir.to_string_lossy().replace(r"\\?\", ""));
+
     // Crée le dossier de données (contiendra engine.log).
     let _ = std::fs::create_dir_all(&data_dir);
 
@@ -278,6 +285,11 @@ fn spawn_engine(app: &tauri::App, win: tauri::WebviewWindow) {
         env_path = format!("{}{}{}", ffdir.display(), sep, env_path);
         eprintln!("[guitarlab] ffmpeg ajouté au PATH : {}", ffdir.display());
     }
+
+    // Retire un éventuel préfixe verbeux ``\\?\`` injecté dans la valeur du
+    // PATH (même cause d'`[Errno 22]` lors de la résolution des sous-processus
+    // ffmpeg/ffprobe). On rebind une chaîne propre pour l'injection d'env.
+    let env_path = env_path.replace(r"\\?\", "");
 
     eprintln!("[guitarlab] Démarrage du moteur : {}", engine.display());
 

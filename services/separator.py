@@ -81,7 +81,22 @@ STEM_ORDER = ["mix", "guitar", "bass", "drums", "vocals", "piano", "other"]
 KEEP_WAV = {"guitar"}  # stems tuiles conservés (transcription du solo)
 
 
+def _clean_windows_path(path: str) -> str:
+    """Retire le préfixe Windows verbeux d'un chemin.
+
+    Sous Windows, les chemins de stems peuvent arriver avec un préfixe verbeux
+    (deux antislashs, un point d'interrogation, un antislash) comme ``\\\\?\\``,
+    qui fait échouer FFmpeg avec ``[Errno 22] Invalid argument``. Seules les
+    chaînes réellement préfixées sont réécrites (les options CLI ne le sont
+    jamais).
+    """
+    return path[4:] if path.startswith("\\\\?\\") else path
+
+
 def _run(cmd: list[str], label: str) -> None:
+    # Assainit les chemins de la commande avant exécution (voir
+    # _clean_windows_path) : un préfixe `\\?\` résiduel casserait l'appel.
+    cmd = [_clean_windows_path(part) for part in cmd]
     logger.info("%s → %s", label, " ".join(cmd))
     proc = subprocess.run(cmd, capture_output=True, text=True)
     if proc.returncode != 0:
@@ -93,8 +108,8 @@ def _run(cmd: list[str], label: str) -> None:
 def _encode_mp3(wav: Path, mp3: Path) -> None:
     _run([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(wav), "-c:a", "libmp3lame", "-b:a", MP3_BITRATE,
-        "-ac", "2", str(mp3),
+        "-i", _clean_windows_path(str(wav)), "-c:a", "libmp3lame", "-b:a",
+        MP3_BITRATE, "-ac", "2", _clean_windows_path(str(mp3)),
     ], "MP3")
 
 

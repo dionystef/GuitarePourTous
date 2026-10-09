@@ -65,7 +65,16 @@ if getattr(sys, "frozen", False):
 # inscriptible et persistant ; en dev on garde `HERE/data`.
 _default_data = (Path.home() / ".local" / "share" / "guitarlab" / "data"
                  if getattr(sys, "frozen", False) else HERE / "data")
-DATA_DIR = Path(os.environ.get("DATA_DIR", _default_data))
+# Assainit la valeur DATA_DIR : sous Windows, le préfixe verbeux `\\?\` (issu de
+# la résolution du chemin par le wrapper Tauri) déclenche `[Errno 22] Invalid
+# argument` sur les API de fichiers. On le supprime pour obtenir un chemin
+# standard (ex. `C:\...`).
+_data_dir_env = os.environ.get("DATA_DIR")
+if not _data_dir_env:
+    _data_dir_env = str(_default_data)
+elif _data_dir_env.startswith("\\\\?\\"):
+    _data_dir_env = _data_dir_env[4:]
+DATA_DIR = Path(_data_dir_env)
 STATIC_DIR = Path(os.environ.get("STATIC_DIR", HERE / "static"))
 MAX_UPLOAD = int(os.environ.get("MAX_UPLOAD_MB", "500")) * 1024 * 1024
 CHUNK_UPLOAD = 1024 * 1024  # lecture du corps d'upload par tranches de 1 Mo

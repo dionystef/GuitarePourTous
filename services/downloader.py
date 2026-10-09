@@ -33,10 +33,28 @@ SOCKET_TIMEOUT = float(os.environ.get("YTDLP_SOCKET_TIMEOUT", "30"))
 ALLOWED_AUDIO_EXT = {".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".webm"}
 
 
+def _clean_windows_path(path: str) -> str:
+    """Retire le préfixe Windows verbeux d'un chemin.
+
+    Sous Windows, certains chemins résolus par l'app portent un préfixe
+    verbeux (deux antislashs, un point d'interrogation, un antislash) comme
+    ``\\\\?\\``, incompatible avec certains appels système de FFmpeg, ce qui
+    provoque ``[Errno 22] Invalid argument``. Seules les chaînes réellement
+    préfixées sont réécrites (les options CLI comme ``-ac`` ne sont jamais
+    affectées).
+    """
+    return path[4:] if path.startswith("\\\\?\\") else path
+
+
 def _ffmpeg(args: list[str]) -> None:
-    bin_ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    # Assainit aussi le binaire (path de shutil.which) : un préfixe `\\?\`
+    # résiduel rendrait le spawn du processus impossible sous Windows.
+    bin_ffmpeg = _clean_windows_path(shutil.which("ffmpeg") or "ffmpeg")
+    # Assainit les chemins avant l'exécution (voir _clean_windows_path) : un
+    # préfixe `\\?\` résiduel ferait échouer FFmpeg avec [Errno 22].
+    cleaned = [_clean_windows_path(arg) for arg in args]
     subprocess.run(
-        [bin_ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *args],
+        [bin_ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *cleaned],
         check=True,
     )
 
@@ -191,6 +209,12 @@ def _youtube_ydl_opts(**extra) -> dict:
         "noplaylist": True,
         "socket_timeout": SOCKET_TIMEOUT,
         "match_filter": _youtube_match_filter,
+        # Sécurise le nommage des fichiers téléchargés : `windowsfilenames`
+        # force une compatibilité Windows (caractères réservés, points finaux),
+        # `restrictfilenames` restreint aux caractères ASCII. Les deux évitent
+        # les noms de sortie invalides pour les liens suivants du pipeline.
+        "windowsfilenames": True,
+        "restrictfilenames": True,
     }
     bin_ffmpeg = shutil.which("ffmpeg")
     if bin_ffmpeg:
