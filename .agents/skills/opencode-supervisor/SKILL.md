@@ -49,4 +49,4 @@ Chaque intervention à destination d'OpenCode doit être formulée dans un bloc 
 - **Contexte / Cause** en 1 ligne.
 - **Fichier(s) cible(s)** avec chemin précis.
 - **Diff ou snippet clair** : ce qu'il faut enlever / ce qu'il faut mettre.
-- **Commande de validation ou de redémarrage** à exécuter.
+*(Rappels stricts : aucun ordre Git ni commande de test dans le prompt OpenCode ; Git et les tests sont exclusivement réalisés par l'utilisateur)*

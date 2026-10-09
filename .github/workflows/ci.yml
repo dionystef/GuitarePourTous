@@ -22,7 +22,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/app" \
             -w /app \
             guitare-ci:latest \
-            sh -c "pytest && node tests/js/resume.test.js"
+            sh -c "pytest && node tests/js/resume.test.js && node tests/js/folders.test.js && node tests/js/library_folders.test.js && node tests/js/ui_redesign.test.js"
 
   deploy:
     needs: test

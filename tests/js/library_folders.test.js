@@ -225,7 +225,7 @@ test('renderFolderTabs: cache "Non classés" quand il n\'y en a aucun', async ()
 });
 
 /* ---------------------------- renderCards / refreshLibrary ----------------- */
-test('refreshLibrary: rend la grille filtrée avec compteur et sélecteur de dossier', async () => {
+test('refreshLibrary: rend la grille filtrée avec compteur et carte épurée (T-UI-08)', async () => {
   const h = buildHarness(routeFetch([
     ['/api/tracks', [track('a', 'Rock', { title: 'Premier' }),
                      track('b', '', { title: 'Non classé' })]],
@@ -236,9 +236,15 @@ test('refreshLibrary: rend la grille filtrée avec compteur et sélecteur de dos
   const lib = h.doc('#library');
   assert.match(lib.innerHTML, /data-title="Premier"/);
   assert.match(lib.innerHTML, /data-folder="Rock"/);
-  assert.match(lib.innerHTML, /<option value="Rock"/);
-  assert.match(lib.innerHTML, /card-edit/); // bouton « renommer »
-  assert.match(lib.innerHTML, /folder-select/);
+  // Depuis la refonte T-UI-08, le sélecteur de dossier et le bouton « renommer »
+  // ne sont plus sur la carte : ils sont déplacés dans le menu contextuel « ••• ».
+  assert.doesNotMatch(lib.innerHTML, /<option value="Rock"/);
+  assert.doesNotMatch(lib.innerHTML, /card-edit/);
+  assert.doesNotMatch(lib.innerHTML, /folder-select/);
+  assert.doesNotMatch(lib.innerHTML, /Ouvrir le labo/);
+  // La nouvelle carte est entièrement cliquable + bouton d'actions « ••• ».
+  assert.match(lib.innerHTML, /card-menu-btn/);
+  assert.match(lib.innerHTML, /status-dot ready/);
   assert.strictEqual(h.doc('#lib-count').textContent, '2 morceaux');
 });
 

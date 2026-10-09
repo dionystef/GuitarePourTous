@@ -16,6 +16,61 @@ const fmtTime = (t) => {
   return `${m}:${String(s).padStart(2, '0')}`;
 };
 
+/* ---------------------------------------------------------------------------
+   Nettoyage des titres : retire les mentions parasites copiées depuis les
+   plateformes de streaming (« [Official Video] », « (Lyrics) », « [Clip
+   Officiel] », « (Official Video Remastered) », …) afin d'afficher un titre
+   net dans la bibliothèque.
+
+   On cible les blocs [..] ou (..) dont le contenu contient au moins un mot
+   parasite, puis on nettoie les séparateurs laissés aux extrémités (tiret,
+   pipe, puce) et on normalise les espaces multiples créés par la suppression.
+   --------------------------------------------------------------------------- */
+// Liste commune des mots parasites, réutilisée par les deux expressions
+// ci-dessous (blocs [..]/[()] et fins de titre) pour éviter toute duplication.
+const TITLE_NOISE_WORDS = 'official|clip|video|lyric|lyrics|audio|remaster|mv|music|hd|4k|1080p|720p|karaoke|vietsub|subtitle|paroles|edit|version|dance|mix';
+// Mots courts/ambigus nécessitant une frontière de mot : sans elle, « Mixing »,
+// « HDTV », « Musical », « Editor », « MVG » seraient traités à tort comme parasites.
+const TITLE_NOISE_BOUNDARY = new Set(['mv', 'music', 'hd', 'mix', 'edit']);
+// « edit » tolère les formes fléchies « edited » / « editing » tout en restant
+// borné (un « Editor » reste non parasite) — pattern partagé par les deux variantes.
+const TITLE_NOISE_EDIT = '\\bedit(?:ed|ing)?\\b';
+// Fragment d'alternance (partagé) : borne les mots ambigus, laisse passer les
+// formes fléchies de « edit ».
+const titleNoiseToken = (w) =>
+  (w === 'edit' ? TITLE_NOISE_EDIT : (TITLE_NOISE_BOUNDARY.has(w) ? `\\b${w}\\b` : w));
+// Alternance pour les blocs [..]/(..) : frontière de mot sur les mots ambigus.
+const TITLE_NOISE_ALT = TITLE_NOISE_WORDS.split('|').map(titleNoiseToken).join('|');
+const TITLE_NOISE_RE = [
+  new RegExp(`\\[[^\\]]*(?:${TITLE_NOISE_ALT})[^\\]]*\\]`, 'gi'),
+  new RegExp(`\\([^)]*(?:${TITLE_NOISE_ALT})[^)]*\\)`, 'gi'),
+];
+// Variante pour les fins de titre : les mots ambigus restent bornés (pas de
+// suffixe), les autres acceptent un suffixe fréquent (« Remastered », « Lyrics »).
+const titleNoiseTrailToken = (w) =>
+  (w === 'edit' ? TITLE_NOISE_EDIT : (TITLE_NOISE_BOUNDARY.has(w) ? `\\b${w}\\b` : `${w}(?:s|es|ed|ing|e)?`));
+const TITLE_TRAIL_ALT = TITLE_NOISE_WORDS.split('|').map(titleNoiseTrailToken).join('|');
+// Parasites en fin de titre (sans parenthèses) : « - Official Video », « | Lyrics »…
+const TITLE_TRAIL_RE = new RegExp(`\\s*[|·–—-]\\s*(?:${TITLE_TRAIL_ALT})(?:\\s+(?:${TITLE_TRAIL_ALT}))*\\s*$`, 'gi');
+function cleanTitle(title) {
+  if (!title) return 'Titre sans nom';
+  let out = String(title);
+  // Supprime d'abord les blocs [..] / (..) contenant un mot parasite.
+  TITLE_NOISE_RE.forEach((re) => { out = out.replace(re, ''); });
+  // Supprime ensuite les parasites non parenthésés en fin de titre.
+  out = out.replace(TITLE_TRAIL_RE, '');
+  // Séparateurs parasites restés seuls en début/fin (tiret, pipe, puce…).
+  out = out.replace(/^\s*[|·–—-]\s*/, '').replace(/\s*[|·–—-]\s*$/, '');
+  out = out.replace(/\s+/g, ' ').trim();
+  // Garde : ne jamais renvoyer un titre vide (carte/label sans texte). On
+  // retombe sur le titre brut normalisé, sinon sur un libellé neutre.
+  if (!out) {
+    const raw = String(title).replace(/\s+/g, ' ').trim();
+    return raw || 'Titre sans nom';
+  }
+  return out;
+}
+
 const API = {
   async json(url, opts) {
     const r = await fetch(url, opts);
@@ -1404,73 +1459,148 @@ function filterTracksByFolder(tracks, folder) {
 }
 
 function renderCard(t) {
-  const chipCls = t.status === 'ready' ? 'ready' : (t.status === 'error' ? 'error' : 'queue');
-  const chipTxt = t.status === 'ready' ? 'Prêt' : (t.status === 'error' ? 'Erreur' : t.status);
+  const title = cleanTitle(t.title);
+  const ready = t.status === 'ready';
+  // Pastille de statut : vert = prêt, rouge = erreur, orange = traitement.
+  const infoCls = ready ? 'ready' : (t.status === 'error' ? 'error' : 'processing');
+  const infoTxt = ready ? 'Prêt' : (t.status === 'error' ? 'Erreur' : (t.status || 'En cours'));
   const thumb = t.thumbnail
     ? `style="background-image:url('${esc(t.thumbnail)}')"`
     : '';
   const meta = [t.artist, t.duration ? fmtTime(t.duration) : null, t.bpm ? `${t.bpm.toFixed(0)} BPM` : null]
     .filter(Boolean).join(' · ');
   const folder = (t.folder || '').trim();
-  const folderOptions = (App.folders || []).map(f =>
-    `<option value="${esc(f)}"${f === folder ? ' selected' : ''}>${esc(f)}</option>`).join('');
+  // Carte épurée : plus de badge « PRÊT » ni de croix superposée ni de bouton
+  // « Ouvrir le labo ». Toute la carte est cliquable ; les actions sont
+  // regroupées dans le bouton contextuel « ••• ».
   return `
-    <article class="card" data-id="${esc(t.id)}" data-title="${esc(t.title)}"
-      data-artist="${esc(t.artist || '')}" data-folder="${esc(folder)}">
+    <article class="card${ready ? '' : ' not-ready'}" data-id="${esc(t.id)}"
+      data-title="${esc(title)}" data-artist="${esc(t.artist || '')}" data-folder="${esc(folder)}"
+      tabindex="0" role="button" aria-label="Ouvrir ${esc(title)} dans le labo">
       <div class="thumb" ${thumb}>
         ${t.thumbnail ? '' : '<span class="fallback">🎸</span>'}
-        <button class="card-del" title="Supprimer" aria-label="Supprimer ${esc(t.title)}">✕</button>
-        <span class="chip ${chipCls}">${chipTxt}</span>
+        <span class="card-play" aria-hidden="true"><span class="play-ico">▶</span></span>
       </div>
       <div class="card-body">
-        <h3>${esc(t.title)}</h3>
-        <div class="meta">${esc(meta)}</div>
-        <div class="fade">${esc((t.stems || []).length)} stems — ${esc(t.source || '')}</div>
-        <div class="card-tools">
-          <select class="folder-select" title="Assigner à un dossier" aria-label="Dossier de ${esc(t.title)}">
-            <option value="">Non classé</option>
-            ${folderOptions}
-          </select>
-          <button type="button" class="card-edit" title="Renommer titre & artiste" aria-label="Renommer ${esc(t.title)}">✏️</button>
+        <h3 title="${esc(title)}">${esc(title)}</h3>
+        <div class="meta">
+          <span class="status-dot ${infoCls}" title="Statut : ${esc(infoTxt)}" aria-label="Statut : ${esc(infoTxt)}"></span>
+          <span class="meta-text">${esc(meta)}</span>
         </div>
-        <button class="btn primary">Ouvrir le labo</button>
+        <div class="fade">${esc((t.stems || []).length)} stems — ${esc(t.source || '')}</div>
       </div>
+      <button type="button" class="card-menu-btn" title="Actions" aria-label="Actions pour ${esc(title)}">•••</button>
     </article>`;
 }
 
 function bindCardEvents(card) {
-  const btn = card.querySelector('.btn');
-  btn.addEventListener('click', async () => {
+  // Toute la carte est cliquable → on ouvre le lecteur. Le menu d'actions
+  // « ••• » isole son clic pour ne pas déclencher la lecture.
+  card.addEventListener('click', async (ev) => {
+    if (ev.target.closest('.card-menu-btn') || ev.target.closest('.card-menu-dropdown')) return;
     try { await openPlayer(card.dataset.id); }
     catch (_) { alert('Impossible d’ouvrir ce morceau (traitement incomplet ?).'); }
   });
-  const del = card.querySelector('.card-del');
-  del.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const name = card.dataset.title || 'ce morceau';
-    if (!confirm(`Supprimer « ${name} » de la bibliothèque ?`)) return;
-    try {
-      await API.remove(card.dataset.id);
-      refreshLibrary();
-    } catch (_) {
-      alert('Suppression impossible (backend injoignable ?).');
+  // Accessibilité clavier : Entrée / Espace ouvrent aussi le lecteur.
+  card.addEventListener('keydown', (ev) => {
+    if (ev.target !== card) return;
+    if (ev.key === 'Enter' || ev.key === ' ') {
+      ev.preventDefault();
+      card.click();
     }
   });
-  const edit = card.querySelector('.card-edit');
-  edit.addEventListener('click', (e) => {
-    e.stopPropagation();
-    openRenameDialog(card.dataset.id, card.dataset.title, card.dataset.artist);
+  const menuBtn = card.querySelector('.card-menu-btn');
+  menuBtn?.addEventListener('click', (ev) => {
+    ev.stopPropagation(); // isole le clic : ne pas déclencher le lecteur
+    toggleCardMenu(menuBtn, card);
   });
-  const select = card.querySelector('.folder-select');
-  select.addEventListener('change', async (e) => {
-    e.stopPropagation();
+}
+
+/* ------------------------ menu contextuel « ••• » des cartes ----------------- */
+// Référence du menu flottant actuellement ouvert (un seul à la fois).
+let openCardMenu = null;
+
+function closeCardMenu() {
+  if (openCardMenu) { openCardMenu.remove(); openCardMenu = null; }
+}
+
+// Ouvre ou referme le menu flottant d'une carte. Le clic sur une entrée est
+// isolé (stopPropagation) pour ne pas déclencher l'ouverture du lecteur.
+function toggleCardMenu(btn, card) {
+  closeCardMenu();
+  const dropdown = document.createElement('div');
+  dropdown.className = 'card-menu-dropdown';
+  dropdown.setAttribute('role', 'menu');
+  dropdown.innerHTML = `
+    <button type="button" class="card-menu-item" data-action="folder" role="menuitem">Changer de dossier</button>
+    <button type="button" class="card-menu-item" data-action="rename" role="menuitem">Renommer</button>
+    <button type="button" class="card-menu-item danger" data-action="delete" role="menuitem">Supprimer</button>
+  `;
+  const r = btn.getBoundingClientRect();
+  dropdown.style.left = Math.max(8, Math.min(r.left - 8, window.innerWidth - 220)) + 'px';
+  dropdown.style.top = (r.bottom + 6) + 'px';
+  dropdown.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const item = ev.target.closest('.card-menu-item');
+    if (!item) return;
+    const action = item.dataset.action;
+    const id = card.dataset.id;
+    const title = card.dataset.title || 'ce morceau';
+    const artist = card.dataset.artist || '';
+    const folder = card.dataset.folder || '';
+    closeCardMenu();
+    if (action === 'delete') {
+      if (!confirm(`Supprimer « ${title} » de la bibliothèque ?`)) return;
+      API.remove(id).then(() => refreshLibrary())
+        .catch(() => alert('Suppression impossible (backend injoignable ?).'));
+    } else if (action === 'rename') {
+      openRenameDialog(id, title, artist);
+    } else if (action === 'folder') {
+      openFolderAssignDialog(id, folder);
+    }
+  });
+  document.body.appendChild(dropdown);
+  openCardMenu = dropdown;
+}
+
+// Dialogue d'assignation d'un dossier via le menu « ••• ».
+function openFolderAssignDialog(id, currentFolder) {
+  const veil = document.createElement('div');
+  veil.className = 'modal-veil';
+  const folders = App.folders || [];
+  veil.innerHTML = `
+    <div class="modal">
+      <div class="modal-head">
+        <h3>Changer de dossier</h3>
+        <button type="button" class="btn ghost" data-close>✕</button>
+      </div>
+      <div class="modal-body">
+        <label class="field-label" for="folder-assign">Dossier</label>
+        <select id="folder-assign" class="text-input">
+          <option value="">Non classé</option>
+          ${folders.map(f => `<option value="${esc(f)}"${f === currentFolder ? ' selected' : ''}>${esc(f)}</option>`).join('')}
+        </select>
+        <div class="modal-actions">
+          <button type="button" class="btn ghost" data-close>Annuler</button>
+          <button type="button" class="btn primary" id="folder-assign-save">Enregistrer</button>
+        </div>
+      </div>
+    </div>`;
+  veil.addEventListener('click', (e) => {
+    if (e.target === veil || e.target.closest('[data-close]')) veil.remove();
+  });
+  const save = veil.querySelector('#folder-assign-save');
+  save?.addEventListener('click', async () => {
+    const val = veil.querySelector('#folder-assign').value;
     try {
-      await API.updateTrackMeta(card.dataset.id, { folder: e.target.value });
+      await API.updateTrackMeta(id, { folder: val });
+      veil.remove();
       refreshLibrary();
     } catch (_) {
       alert('Assignation au dossier impossible.');
     }
   });
+  document.body.appendChild(veil);
 }
 
 /* ------------------ dialogue « renommer » + gestion des dossiers ------------ */
@@ -1659,6 +1789,14 @@ async function init() {
   }
   syncTopbarH();
   window.addEventListener('resize', syncTopbarH);
+
+  // Fermeture du menu contextuel « ••• » au clic en dehors (un seul gestionnaire,
+  // délégué au document, pour éviter les fuites de listeners par ouverture).
+  document.addEventListener('click', (ev) => {
+    if (openCardMenu && !openCardMenu.contains(ev.target) && !ev.target.closest('.card-menu-btn')) {
+      closeCardMenu();
+    }
+  });
 
   // chip device & version dynamique
   try {

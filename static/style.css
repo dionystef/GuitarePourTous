@@ -141,39 +141,71 @@ em { font-style: normal; color: var(--accent-2); }
 /* ------------------------------------------------------------------ bibliothèque */
 .library { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
 .card {
+  position: relative;
   background: var(--panel); border: 1px solid var(--border); border-radius: 14px;
-  overflow: hidden; display: flex; flex-direction: column; transition: transform .12s, border-color .15s;
+  overflow: hidden; display: flex; flex-direction: column; transition: transform .12s, border-color .18s, box-shadow .18s;
+  cursor: pointer; user-select: none;
 }
-.card:hover { transform: translateY(-2px); border-color: var(--accent); }
+.card:hover { transform: translateY(-3px); border-color: var(--accent); box-shadow: 0 12px 30px rgba(0,0,0,.35), 0 0 0 1px rgba(var(--accent-rgb),.25); }
+.card:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
 .card .thumb { height: 128px; background: linear-gradient(135deg, #1b2340, #151a2b 60%); background-size: cover; background-position: center; position: relative; }
 .card .thumb .fallback { position: absolute; inset: 0; display: grid; place-items: center; font-size: 34px; opacity: .5; }
-.card .thumb .chip {
-  position: absolute; top: 9px; left: 9px; font-size: 10.5px; font-weight: 700;
-  padding: 3px 9px; border-radius: 999px; text-transform: uppercase; letter-spacing: .06em;
-  background: rgba(11,14,20,.75); border: 1px solid var(--border-2);
+/* Retour visuel discret au survol : voile + icône Play sur la pochette. */
+.card .card-play {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: linear-gradient(180deg, rgba(11,14,20,0) 40%, rgba(11,14,20,.55));
+  opacity: 0; transition: opacity .18s ease;
 }
-.card .thumb .card-del {
-  position: absolute; top: 8px; right: 8px;
-  width: 26px; height: 26px; display: grid; place-items: center;
-  padding: 0; border: 1px solid var(--border-2); border-radius: 8px;
-  background: rgba(11,14,20,.75); color: var(--text-dim);
-  font-size: 13px; line-height: 1; cursor: pointer;
-  transition: color .15s, border-color .15s, box-shadow .15s, background .15s;
+.card .card-play .play-ico {
+  width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%;
+  background: var(--accent-grad); color: #0b0e14; font-size: 16px;
+  box-shadow: 0 6px 18px rgba(0,0,0,.45);
+  transform: scale(.85); transition: transform .18s ease;
 }
-.card .thumb .card-del:hover {
-  color: var(--red); border-color: rgba(239,83,80,.7); cursor: pointer;
-  background: rgba(239,83,80,.12); box-shadow: 0 0 12px rgba(239,83,80,.35);
-}
-.card .thumb .card-del:focus-visible { outline: 2px solid var(--red); outline-offset: 1px; }
-.chip.ready { color: var(--ok); border-color: rgba(102,187,106,.5); }
-.chip.error { color: var(--red); border-color: rgba(239,83,80,.5); }
-.chip.queue, .chip.processing { color: var(--amber); border-color: rgba(249,168,37,.5); }
-.card-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
-.card-body h3 { margin: 0; font-size: 15px; line-height: 1.3; }
-.card-body .meta { color: var(--text-dim); font-size: 12px; }
+.card:not(.not-ready):hover .card-play { opacity: 1; }
+.card:not(.not-ready):hover .card-play .play-ico { transform: scale(1); }
+.card.not-ready .thumb { filter: saturate(.5) brightness(.78); }
+.card.not-ready .card-play { display: none; }
+.card-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.card-body h3 { margin: 0; font-size: 15px; line-height: 1.35; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-body .meta { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: 12px; }
+.card-body .meta .meta-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Pastille discrète de statut dans la ligne de métadonnées. */
+.card .meta .status-dot { flex: 0 0 auto; width: 8px; height: 8px; box-shadow: none; }
 .card-body .fade { color: var(--text-faint); font-size: 11.5px; }
-.card-body .btn { justify-content: center; margin-top: auto; }
+/* Bouton d'actions contextuel « ••• ». */
+.card-menu-btn {
+  position: absolute; top: 8px; right: 8px; z-index: 2;
+  width: 30px; height: 30px; display: grid; place-items: center;
+  border: 1px solid var(--border-2); border-radius: 8px;
+  background: rgba(11,14,20,.72); color: var(--text-dim);
+  font-size: 14px; line-height: 1; letter-spacing: 1px; cursor: pointer;
+  transition: color .15s, border-color .15s, background .15s;
+}
+.card-menu-btn:hover { color: var(--accent-2); border-color: var(--accent); background: rgba(var(--accent-rgb),.18); }
+.card-menu-btn:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 1px; }
 .empty { text-align: center; color: var(--text-dim); padding: 30px; }
+
+/* Menu contextuel flottant ouvert par le bouton « ••• ». */
+.card-menu-dropdown {
+  position: fixed; z-index: 80; min-width: 190px;
+  background: var(--panel-2); border: 1px solid var(--border-2); border-radius: 12px;
+  padding: 6px; box-shadow: 0 16px 40px rgba(0,0,0,.5);
+  animation: menu-pop .12s ease;
+}
+@keyframes menu-pop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.card-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left;
+  background: transparent; border: 0; border-radius: 8px;
+  color: var(--text); font-size: 13px; font-weight: 600;
+  padding: 10px 12px; cursor: pointer;
+  transition: background .13s, color .13s;
+}
+.card-menu-item:hover { background: rgba(var(--accent-rgb), .14); color: var(--accent-2); }
+.card-menu-item.danger { color: var(--red); }
+.card-menu-item.danger:hover { background: rgba(239,83,80,.14); color: var(--red); }
+.card-menu-item:focus-visible { outline: 2px solid var(--accent-2); outline-offset: -2px; }
 
 /* ----------------------------------------------------- barre d'onglets dossiers */
 .folder-tabs-bar {
@@ -245,53 +277,14 @@ em { font-style: normal; color: var(--accent-2); }
   font-weight: 600;
   cursor: pointer;
   transition: border-color .15s, color .15s, background .15s;
+  /* Sépare visuellement l'action « + Dossier » de la liste des onglets (desktop). */
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .folder-add:hover {
   border-color: var(--accent-2);
   color: var(--accent-2);
   background: rgba(var(--accent-2-rgb), .06);
-}
-
-/* --------------------------------------- outils sur carte (édition + dossier) */
-.card-tools {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.folder-select {
-  flex: 1;
-  min-width: 0;
-  background: var(--bg);
-  border: 1px solid var(--border-2);
-  border-radius: 8px;
-  color: var(--text-dim);
-  font-size: 11.5px;
-  padding: 5px 8px;
-  cursor: pointer;
-  outline: none;
-  transition: border-color .15s;
-}
-.folder-select:hover { border-color: var(--accent); color: var(--text); }
-.folder-select:focus { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .15); }
-.card-edit {
-  flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--border-2);
-  border-radius: 8px;
-  background: var(--panel-2);
-  color: var(--text-dim);
-  font-size: 14px;
-  line-height: 1;
-  cursor: pointer;
-  transition: color .15s, border-color .15s, background .15s;
-}
-.card-edit:hover {
-  color: var(--accent-2);
-  border-color: var(--accent);
-  background: rgba(var(--accent-rgb), .12);
 }
 
 /* ---------------------------------------------------------------------- job */
@@ -1256,20 +1249,86 @@ input[type="range"].fader { width: 100%; }
   /* Paroles plus grandes sur mobile */
   .karaoke-stage { min-height: 260px; }
   .k-line { max-width: 96%; }
-  /* Bibliothèque : 2 tuiles côte à côte compactes */
-  .library {
-    grid-template-columns: repeat(2, 1fr);
-    gap: 10px;
+  /* ---- Ruban de dossiers : carrousel horizontal sur 1 seule ligne ---- */
+  #library-folders {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding-bottom: 8px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
   }
-  .card .thumb { height: 82px; }
-  .card .thumb .fallback { font-size: 22px; }
-  .card .thumb .chip { font-size: 9.5px; padding: 2px 7px; }
-  .card .thumb .card-del { width: 24px; height: 24px; font-size: 12px; top: 6px; right: 6px; }
-  .card-body { padding: 8px 10px 10px; gap: 4px; }
-  .card-body h3 { font-size: 12.5px; line-height: 1.25; }
+  #library-folders::-webkit-scrollbar { display: none; }
+  #library-folders .folder-tab { flex: 0 0 auto; }
+  #library-folders .folder-add { margin-left: 8px; align-self: center; }
+
+  /* ---- Sas d'import compact : une seule ligne fluide en haut d'écran ---- */
+  #add-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  #add-form .url-row { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+  #add-form .url-row input { font-size: 13px; padding: 10px 4px; }
+  #add-form .action-row { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; flex-shrink: 0; }
+  #add-form .action-row .file-name { display: none; } /* nom de fichier reporté dans le hint */
+  #add-form .hint { flex-basis: 100%; margin: 8px 0 0; }
+  #add-form .btn { padding: 9px 10px; font-size: 12px; }
+
+  /* ---- Bibliothèque : liste tactile compacte (1 colonne) façon streaming ---- */
+  .library {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .card {
+    flex-direction: row;
+    align-items: center;
+    padding: 6px 12px; /* content 6+56+6 = 68px : la pochette 56px tient sans rognage */
+    height: 68px;
+    gap: 12px;
+    border-radius: 12px;
+    transform: none;
+  }
+  .card:hover { transform: none; }
+  .card .thumb {
+    width: 56px;
+    height: 56px; /* pochette carrée compacte */
+    border-radius: 8px;
+    flex-shrink: 0;
+  }
+  .card .thumb .fallback { font-size: 20px; }
+  .card .card-play { display: none; } /* pas d'overlay play sur la liste mobile */
+  .card-body { flex: 1; min-width: 0; padding: 0; gap: 2px; }
+  .card-body h3 {
+    font-size: 13px;
+    line-height: 1.3;
+    display: block;
+    white-space: nowrap;      /* titre tronqué sur une seule ligne */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    -webkit-line-clamp: unset;
+  }
   .card-body .meta { font-size: 11px; }
-  .card-body .fade { font-size: 10px; }
-  .card-body .btn { padding: 7px 10px; font-size: 11px; }
+  .card-body .fade { display: none; } /* ligne compacte : on masque les détails */
+  /* Bouton « ••• » à droite, cible tactile ≥ 44px */
+  .card-menu-btn {
+    position: static;
+    flex-shrink: 0;
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+    background: transparent;
+    border: 0;
+    border-radius: 10px;
+  }
+  .card-menu-btn:active { background: rgba(var(--accent-rgb), .18); }
+  .card-menu-dropdown { min-width: min(240px, 86vw); }
+  .card-menu-item { min-height: 44px; }
+
+  /* ---- Cibles tactiles ≥ 44×44 px pour tous les éléments interactifs ---- */
+  #add-form .url-row { min-height: 44px; }
+  #add-form .url-row input { min-height: 44px; }
+  #add-form .btn { min-height: 44px; }
+  #library-folders .folder-tab { min-height: 44px; }
+  #library-folders .folder-add { min-height: 44px; }
+  .nav-link { min-height: 44px; min-width: 44px; }
+  .theme-toggle-btn { min-height: 44px; min-width: 44px; }
+
   .chord-grid {
     grid-template-columns: repeat(4, 1fr);
     gap: 5px;
