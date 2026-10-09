@@ -14,6 +14,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
@@ -53,10 +54,18 @@ def _ffmpeg(args: list[str]) -> None:
     # Assainit les chemins avant l'exécution (voir _clean_windows_path) : un
     # préfixe `\\?\` résiduel ferait échouer FFmpeg avec [Errno 22].
     cleaned = [_clean_windows_path(arg) for arg in args]
-    subprocess.run(
+    creation_flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+    proc = subprocess.run(
         [bin_ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *cleaned],
-        check=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=creation_flags,
     )
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(f"FFmpeg ({proc.returncode}): {tail}")
 
 
 def _to_wav(src: Path, dst: Path) -> Path:

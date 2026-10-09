@@ -445,9 +445,18 @@ class JobManager:
             self._cleanup_original(track_dir)
             self.log(track_id, "✔ Terminé. Bonne répétition ! 🎸", 100, status="ready")
         except Exception as exc:  # noqa: BLE001
+            import traceback
+            tb = traceback.format_exc()
             logger.exception("Pipeline en échec pour %s : %s", track_id, exc)
+            frames = [line.strip() for line in tb.splitlines() if "File " in line]
+            last_frame = f" [{frames[-1]}]" if frames else ""
             err_msg = str(exc) or exc.__class__.__name__
-            self.log(track_id, f"✖ Échec du traitement : {err_msg}", 100, status="error")
+            self.log(track_id, f"✖ Échec du traitement : {err_msg}{last_frame}", 100, status="error")
+            try:
+                (track_dir / "crash.log").write_text(tb, encoding="utf-8", errors="ignore")
+                (DATA_DIR / "last_crash.log").write_text(tb, encoding="utf-8", errors="ignore")
+            except Exception:
+                pass
             # Un morceau annulé ne doit pas recréer de `metadata.json` d'erreur.
             if self.is_cancelled(track_id):
                 return

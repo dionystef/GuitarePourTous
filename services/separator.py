@@ -17,6 +17,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 from demucs.separate import main as demucs_main
@@ -98,7 +99,14 @@ def _run(cmd: list[str], label: str) -> None:
     # _clean_windows_path) : un préfixe `\\?\` résiduel casserait l'appel.
     cmd = [_clean_windows_path(part) for part in cmd]
     logger.info("%s → %s", label, " ".join(cmd))
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    creation_flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
+    proc = subprocess.run(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        creationflags=creation_flags,
+    )
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-900:]
         raise RuntimeError(f"{label} en échec (code {proc.returncode}) : {tail}")
