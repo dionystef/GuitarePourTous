@@ -6,6 +6,9 @@ datas = [('services', 'services'), ('static', 'static')]
 binaries = []
 hiddenimports = ['uvicorn', 'uvicorn.logging', 'uvicorn.loops', 'uvicorn.loops.auto', 'uvicorn.protocols', 'uvicorn.protocols.http', 'uvicorn.protocols.http.auto', 'uvicorn.protocols.websockets', 'uvicorn.protocols.websockets.auto', 'uvicorn.lifespan', 'uvicorn.lifespan.on', 'fastapi', 'demucs', 'demucs.separate', 'torch', 'torchaudio', 'soundfile', 'scipy', 'madmom', 'librosa', 'yt_dlp', 'anyio', 'anyio._backends._asyncio', 'starlette', 'basic_pitch', 'pretty_midi', 'mido']
 hiddenimports += collect_submodules('uvicorn')
+hiddenimports += collect_submodules('anyio')
+hiddenimports += collect_submodules('starlette')
+hiddenimports += collect_submodules('fastapi')
 try:
     tmp_ret = collect_all('madmom')
     datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
