@@ -43,7 +43,7 @@ jobs:
             python -m pip install fastapi uvicorn[standard] python-multipart "anyio>=3.7.1,<5" numpy scipy soundfile librosa demucs basic-pitch mido yt-dlp faster-whisper
           }
           python -m pip install pyinstaller
-          python -c "import anyio; print('Vérification AnyIO OK :', anyio.__version__)"
+          python -c "import anyio, fastapi, uvicorn; print('Verification modules OK : AnyIO, FastAPI, Uvicorn sont bien installes')"
 
       - name: Build engine with PyInstaller
         run: python -m PyInstaller --clean guitarlab-engine.spec
