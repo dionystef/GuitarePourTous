@@ -241,6 +241,15 @@ fn spawn_engine(app: &tauri::App, win: tauri::WebviewWindow) {
         .unwrap_or_else(|_| {
             #[cfg(target_os = "windows")]
             {
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(dir) = exe.parent() {
+                        let portable_marker = dir.join(".portable");
+                        let local_data = dir.join("data");
+                        if portable_marker.exists() || local_data.exists() {
+                            return local_data;
+                        }
+                    }
+                }
                 if let Ok(appdata) = std::env::var("LOCALAPPDATA") {
                     PathBuf::from(appdata).join("GuitarLab").join("data")
                 } else if let Ok(userprofile) = std::env::var("USERPROFILE") {

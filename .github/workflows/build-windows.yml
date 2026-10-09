@@ -1,11 +1,11 @@
-name: Build Windows (NSIS)
+name: Build Windows (NSIS & Portable)
 
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows]
 
     steps:
       - name: Checkout
@@ -69,4 +69,31 @@ jobs:
         with:
           name: guitarlab-windows-nsis
           path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+
+      - name: Package Portable version (ZIP)
+        shell: pwsh
+        run: |
+          $portableDir = "dist-portable/GuitarLab-Portable"
+          New-Item -ItemType Directory -Force -Path "$portableDir/data" | Out-Null
+          New-Item -ItemType File -Force -Path "$portableDir/.portable" | Out-Null
+
+          # Récupération de l'exécutable Tauri compilé
+          $exe = Get-ChildItem -Path "src-tauri/target/release" -Filter "*.exe" -File | Where-Object { $_.Name -like "*Guitar*Lab*.exe" -or $_.Name -like "*guitar-lab*.exe" } | Select-Object -First 1
+          if (-not $exe) { throw "Exécutable Tauri introuvable dans src-tauri/target/release" }
+          Write-Host "Binaire Tauri trouvé : $($exe.FullName)"
+          Copy-Item -Force $exe.FullName "$portableDir/Guitar Lab.exe"
+
+          # Copie des ressources embarquées (engine PyInstaller + ffmpeg)
+          Copy-Item -Recurse -Force "src-tauri/resources" "$portableDir/resources"
+
+          # Création de l'archive ZIP portable
+          Compress-Archive -Path "$portableDir" -DestinationPath "guitarlab-windows-portable.zip" -Force
+          Write-Host "Archive portable créée avec succès : guitarlab-windows-portable.zip"
+
+      - name: Upload Portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: guitarlab-windows-portable
+          path: guitarlab-windows-portable.zip
           if-no-files-found: error
