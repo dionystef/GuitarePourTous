@@ -6,42 +6,31 @@ on:
 jobs:
   build:
     runs-on: [self-hosted, Windows]
+    defaults:
+      run:
+        shell: powershell
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Setup Node.js 20
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Cache Rust build
-        uses: actions/cache@v4
-        with:
-          path: src-tauri/target
-          key: tauri-target-${{ runner.os }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - name: Clean previous build artifacts
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "ffmpeg-extract", "dist-portable", "dist", "guitarlab-windows-portable.zip", "ffmpeg-master-latest-win64-gpl.zip"
 
       - name: Download ffmpeg / ffprobe
-        shell: pwsh
         run: |
           $binDir = "src-tauri/resources/bin"
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-          $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
-          $archive = "ffmpeg-master-latest-win64-gpl.zip"
-          Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile "$archive"
-          Expand-Archive -Path $archive -DestinationPath "ffmpeg-extract" -Force
-          $ffdir = Get-ChildItem -Path "ffmpeg-extract" -Directory | Select-Object -First 1
-          Copy-Item -Force "$($ffdir.FullName)/bin/ffmpeg.exe" "$binDir/ffmpeg.exe"
-          Copy-Item -Force "$($ffdir.FullName)/bin/ffprobe.exe" "$binDir/ffprobe.exe"
+          if (-not (Test-Path "$binDir/ffmpeg.exe")) {
+            $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+            $archive = "ffmpeg-master-latest-win64-gpl.zip"
+            Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile "$archive"
+            Expand-Archive -Path $archive -DestinationPath "ffmpeg-extract" -Force
+            $ffdir = Get-ChildItem -Path "ffmpeg-extract" -Directory | Select-Object -First 1
+            Copy-Item -Force "$($ffdir.FullName)/bin/ffmpeg.exe" "$binDir/ffmpeg.exe"
+            Copy-Item -Force "$($ffdir.FullName)/bin/ffprobe.exe" "$binDir/ffprobe.exe"
+          }
 
       - name: Install PyTorch CPU (Windows)
         run: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
@@ -55,7 +44,6 @@ jobs:
         run: pyinstaller guitarlab-engine.spec
 
       - name: Copy engine into Tauri resources
-        shell: pwsh
         run: |
           $dest = "src-tauri/resources/engine"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
@@ -72,7 +60,6 @@ jobs:
           if-no-files-found: error
 
       - name: Package Portable version (ZIP)
-        shell: pwsh
         run: |
           $portableDir = "dist-portable/GuitarLab-Portable"
           New-Item -ItemType Directory -Force -Path "$portableDir/data" | Out-Null
