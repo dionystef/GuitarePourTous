@@ -13,24 +13,35 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          clean: false
 
       - name: Clean previous build artifacts
         run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "ffmpeg-extract", "dist-portable", "dist", "guitarlab-windows-portable.zip", "ffmpeg-master-latest-win64-gpl.zip"
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "dist-portable", "dist", "guitarlab-windows-portable.zip"
 
-      - name: Download ffmpeg / ffprobe
+      - name: Setup ffmpeg / ffprobe
         run: |
+          $cacheDir = "$env:USERPROFILE\.guitarlab-cache\bin"
+          New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+          if (-not (Test-Path "$cacheDir/ffmpeg.exe") -or -not (Test-Path "$cacheDir/ffprobe.exe")) {
+            Write-Host "Téléchargement initial de FFmpeg vers le cache ($cacheDir)..."
+            $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+            $archive = "$env:TEMP\ffmpeg-latest-win64.zip"
+            Invoke-WebRequest -UseBasicParsing -Uri "$base/ffmpeg-master-latest-win64-gpl.zip" -OutFile "$archive"
+            Expand-Archive -Path "$archive" -DestinationPath "$env:TEMP\ffmpeg-extract" -Force
+            $ffdir = Get-ChildItem -Path "$env:TEMP\ffmpeg-extract" -Directory | Select-Object -First 1
+            Copy-Item -Force "$($ffdir.FullName)/bin/ffmpeg.exe" "$cacheDir/ffmpeg.exe"
+            Copy-Item -Force "$($ffdir.FullName)/bin/ffprobe.exe" "$cacheDir/ffprobe.exe"
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:TEMP\ffmpeg-extract", "$archive"
+          } else {
+            Write-Host "FFmpeg trouvé dans le cache local ($cacheDir) : aucun téléchargement nécessaire."
+          }
+
           $binDir = "src-tauri/resources/bin"
           New-Item -ItemType Directory -Force -Path $binDir | Out-Null
-          if (-not (Test-Path "$binDir/ffmpeg.exe")) {
-            $base = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
-            $archive = "ffmpeg-master-latest-win64-gpl.zip"
-            Invoke-WebRequest -UseBasicParsing -Uri "$base/$archive" -OutFile "$archive"
-            Expand-Archive -Path $archive -DestinationPath "ffmpeg-extract" -Force
-            $ffdir = Get-ChildItem -Path "ffmpeg-extract" -Directory | Select-Object -First 1
-            Copy-Item -Force "$($ffdir.FullName)/bin/ffmpeg.exe" "$binDir/ffmpeg.exe"
-            Copy-Item -Force "$($ffdir.FullName)/bin/ffprobe.exe" "$binDir/ffprobe.exe"
-          }
+          Copy-Item -Force "$cacheDir/ffmpeg.exe" "$binDir/ffmpeg.exe"
+          Copy-Item -Force "$cacheDir/ffprobe.exe" "$binDir/ffprobe.exe"
 
       - name: Install PyTorch CPU (Windows)
         run: python -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu

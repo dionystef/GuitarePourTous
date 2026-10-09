@@ -21,7 +21,7 @@ tauri = { version = "2", features = [] }
 
 [profile.release]
 panic = "abort"
-codegen-units = 1
-lto = true
-opt-level = "s"
+codegen-units = 16
+lto = "thin"
+opt-level = 3
 strip = true
